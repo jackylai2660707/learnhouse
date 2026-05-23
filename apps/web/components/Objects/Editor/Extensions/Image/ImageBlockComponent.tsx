@@ -1,9 +1,9 @@
 import { NodeViewWrapper } from '@tiptap/react'
 import React, { useEffect } from 'react'
 import { Resizable } from 're-resizable'
-import { Image, Download, AlignLeft, AlignCenter, AlignRight, Expand, Upload, Loader2, AlertCircle } from 'lucide-react'
+import { Image, Download, AlignLeft, AlignCenter, AlignRight, Expand, Upload, Loader2, AlertCircle, Sparkles } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { uploadNewImageFile } from '../../../../../services/blocks/Image/images'
+import { generateAIImageBlock, uploadNewImageFile } from '../../../../../services/blocks/Image/images'
 import { getActivityBlockMediaDirectory } from '@services/media/media'
 import { useOrg } from '@components/Contexts/OrgContext'
 import { useCourse } from '@components/Contexts/CourseContext'
@@ -30,8 +30,10 @@ function ImageBlockComponent(props: any) {
   const isEditable = editorState.isEditable
   const [image, setImage] = React.useState<File | null>(null)
   const [isLoading, setIsLoading] = React.useState(false)
+  const [isGenerating, setIsGenerating] = React.useState(false)
   const [isDragging, setIsDragging] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
+  const [aiPrompt, setAiPrompt] = React.useState('')
   const [blockObject, setblockObject] = React.useState(
     props.node.attrs.blockObject
   )
@@ -82,6 +84,39 @@ function ImageBlockComponent(props: any) {
       toast.error(errorMessage)
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleGenerateAIImage = async () => {
+    const prompt = aiPrompt.trim()
+    const orgId = org?.id
+    const activityUuid = props.extension.options.activity.activity_uuid
+    if (!access_token || !orgId || !activityUuid || !prompt) return
+
+    setIsGenerating(true)
+    setError(null)
+    try {
+      const result = await generateAIImageBlock(
+        prompt,
+        activityUuid,
+        orgId,
+        access_token,
+        { size: '1024x1024', quality: 'medium' }
+      )
+      setblockObject(result.block)
+      props.updateAttributes({
+        blockObject: result.block,
+        size: imageSize,
+        alignment: alignment,
+      })
+      setAiPrompt('')
+      toast.success('Image generated')
+    } catch (err: any) {
+      const errorMessage = err?.message || 'Failed to generate image. Please try again.'
+      setError(errorMessage)
+      toast.error(errorMessage)
+    } finally {
+      setIsGenerating(false)
     }
   }
 
@@ -292,7 +327,7 @@ function ImageBlockComponent(props: any) {
 
           {/* Upload Zone - shown when no image */}
           {!blockObject && !unsplashUrl && isEditable && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <div
                 onClick={() => fileInputRef.current?.click()}
                 onDragEnter={handleDragEnter}
@@ -333,7 +368,7 @@ function ImageBlockComponent(props: any) {
               <button
                 type="button"
                 onClick={() => setIsUnsplashOpen(true)}
-                disabled={isLoading}
+                disabled={isLoading || isGenerating}
                 className="border border-neutral-200 rounded-lg text-center cursor-pointer transition-all flex flex-col items-center justify-center min-h-[160px] p-6 bg-white hover:border-neutral-400 hover:bg-neutral-50 disabled:opacity-50 disabled:cursor-not-allowed outline-none"
               >
                 <div className="space-y-2">
@@ -350,6 +385,28 @@ function ImageBlockComponent(props: any) {
                   </div>
                 </div>
               </button>
+              <div className="border border-neutral-200 rounded-lg min-h-[160px] p-4 bg-white flex flex-col gap-3">
+                <div className="flex items-center gap-2 text-neutral-700">
+                  <Sparkles className="w-4 h-4" />
+                  <p className="text-sm font-medium">AI Image</p>
+                </div>
+                <textarea
+                  value={aiPrompt}
+                  onChange={(event) => setAiPrompt(event.target.value)}
+                  disabled={isGenerating || isLoading}
+                  placeholder="Describe the image to generate"
+                  className="min-h-[72px] resize-none rounded-md border border-neutral-200 bg-neutral-50 px-3 py-2 text-sm outline-none focus:border-neutral-400 disabled:opacity-50"
+                />
+                <button
+                  type="button"
+                  onClick={handleGenerateAIImage}
+                  disabled={!aiPrompt.trim() || isGenerating || isLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded-md bg-neutral-900 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-50 outline-none"
+                >
+                  {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                  Generate
+                </button>
+              </div>
             </div>
           )}
 

@@ -43,6 +43,7 @@ class AIConfig(BaseModel):
     openai_base_url: str | None
     openai_api_key: str | None
     openai_model: str | None
+    openai_image_model: str | None
 
 
 class S3ApiConfig(BaseModel):
@@ -366,6 +367,7 @@ def get_learnhouse_config() -> LearnHouseConfig:
     env_openai_base_url = os.environ.get("LEARNHOUSE_OPENAI_BASE_URL")
     env_openai_api_key = os.environ.get("LEARNHOUSE_OPENAI_API_KEY")
     env_openai_model = os.environ.get("LEARNHOUSE_OPENAI_MODEL")
+    env_openai_image_model = os.environ.get("LEARNHOUSE_OPENAI_IMAGE_MODEL")
 
     gemini_api_key = env_gemini_api_key or yaml_config.get("ai_config", {}).get(
         "gemini_api_key"
@@ -388,6 +390,11 @@ def get_learnhouse_config() -> LearnHouseConfig:
     openai_model = (
         env_openai_model
         or yaml_config.get("ai_config", {}).get("openai_model")
+    )
+    openai_image_model = (
+        env_openai_image_model
+        or yaml_config.get("ai_config", {}).get("openai_image_model")
+        or "gpt-image-2"
     )
     
     # Parse is_ai_enabled from env or yaml
@@ -572,6 +579,7 @@ def get_learnhouse_config() -> LearnHouseConfig:
         openai_base_url=openai_base_url.rstrip("/") if openai_base_url else None,
         openai_api_key=openai_api_key,
         openai_model=openai_model,
+        openai_image_model=openai_image_model,
     )
 
     # Surface missing internal-service keys at boot rather than at first

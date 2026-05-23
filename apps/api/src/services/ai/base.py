@@ -201,6 +201,72 @@ def get_gemini_client():
     return genai.Client(api_key=api_key)
 
 
+def generate_openai_compatible_image(
+    prompt: str,
+    *,
+    model: str | None = None,
+    size: str = "1024x1024",
+    quality: str | None = None,
+    background: str | None = None,
+) -> tuple[bytes, str, str | None]:
+    """Generate one image through an OpenAI-compatible /images/generations API.
+
+    Returns (image_bytes, output_format, revised_prompt).
+    """
+    ai_config = get_learnhouse_config().ai_config
+    base_url = getattr(ai_config, "openai_base_url", None)
+    api_key = getattr(ai_config, "openai_api_key", None)
+    image_model = model or getattr(ai_config, "openai_image_model", None) or "gpt-image-2"
+    if not base_url or not api_key:
+        raise Exception("OpenAI-compatible image provider is not configured")
+
+    payload: dict[str, Any] = {
+        "model": image_model,
+        "prompt": prompt,
+        "n": 1,
+        "size": size,
+    }
+    if quality:
+        payload["quality"] = quality
+    if background:
+        payload["background"] = background
+
+    response = httpx.post(
+        f"{base_url.rstrip('/')}/images/generations",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=180.0,
+    )
+    response.raise_for_status()
+    data = response.json()
+    image_item = (data.get("data") or [{}])[0]
+    output_format = (data.get("output_format") or "png").lower()
+    revised_prompt = image_item.get("revised_prompt")
+
+    b64_json = image_item.get("b64_json")
+    if b64_json:
+        import base64
+        return base64.b64decode(b64_json), output_format, revised_prompt
+
+    image_url = image_item.get("url")
+    if image_url:
+        image_response = httpx.get(image_url, timeout=180.0)
+        image_response.raise_for_status()
+        content_type = image_response.headers.get("content-type", "")
+        if "jpeg" in content_type or "jpg" in content_type:
+            output_format = "jpg"
+        elif "webp" in content_type:
+            output_format = "webp"
+        elif "png" in content_type:
+            output_format = "png"
+        return image_response.content, output_format, revised_prompt
+
+    raise Exception("Image generation response did not include image data")
+
+
 def ask_ai(
     question: str,
     message_history: Any,

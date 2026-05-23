@@ -1,8 +1,10 @@
 from types import SimpleNamespace
+import base64
 
 from src.services.ai.base import (
     _OpenAICompatibleModels,
     _gemini_contents_to_openai_messages,
+    generate_openai_compatible_image,
 )
 
 
@@ -107,3 +109,54 @@ def test_openai_compatible_generate_content_stream(monkeypatch):
     ))
 
     assert [chunk.text for chunk in chunks] == ["Hel", "lo"]
+
+
+def test_generate_openai_compatible_image_from_b64(monkeypatch):
+    captured = {}
+
+    class _Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "output_format": "png",
+                "data": [{
+                    "b64_json": base64.b64encode(b"image-bytes").decode(),
+                    "revised_prompt": "revised",
+                }],
+            }
+
+    def fake_post(url, headers, json, timeout):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr("src.services.ai.base.httpx.post", fake_post)
+    monkeypatch.setattr(
+        "src.services.ai.base.get_learnhouse_config",
+        lambda: SimpleNamespace(
+            ai_config=SimpleNamespace(
+                openai_base_url="https://example.test/v1/",
+                openai_api_key="secret",
+                openai_image_model="gpt-image-2",
+            )
+        ),
+    )
+
+    image_bytes, image_format, revised_prompt = generate_openai_compatible_image(
+        "Draw a cube",
+        size="1024x1024",
+        quality="medium",
+    )
+
+    assert image_bytes == b"image-bytes"
+    assert image_format == "png"
+    assert revised_prompt == "revised"
+    assert captured["url"] == "https://example.test/v1/images/generations"
+    assert captured["headers"]["Authorization"] == "Bearer secret"
+    assert captured["json"]["model"] == "gpt-image-2"
+    assert captured["json"]["prompt"] == "Draw a cube"
+    assert captured["json"]["quality"] == "medium"

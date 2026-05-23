@@ -42,3 +42,43 @@ export async function getImageFile(file_id: string, access_token: string) {
     .then((result) => result.json())
     .catch((error) => console.log('error', error))
 }
+
+export async function generateAIImageBlock(
+  prompt: string,
+  activity_uuid: string,
+  org_id: number,
+  access_token: string,
+  options?: {
+    size?: '1024x1024' | '1024x1536' | '1536x1024'
+    quality?: 'low' | 'medium' | 'high' | 'auto'
+  }
+) {
+  const response = await fetch(
+    `${getAPIUrl()}ai/images/generate`,
+    RequestBodyWithAuthHeader(
+      'POST',
+      {
+        org_id,
+        activity_uuid,
+        prompt,
+        size: options?.size || '1024x1024',
+        quality: options?.quality || 'medium',
+      },
+      null,
+      access_token
+    )
+  )
+
+  const data = await response.json()
+
+  if (!response.ok) {
+    const errorMessage = typeof data?.detail === 'string'
+      ? data.detail
+      : Array.isArray(data?.detail)
+        ? data.detail.map((e: any) => e.msg).join(', ')
+        : 'Image generation failed'
+    throw new Error(errorMessage)
+  }
+
+  return data
+}
