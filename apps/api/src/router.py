@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from src.routers import admin as admin_router_module
 from src.routers import analytics as analytics_router_module
-from src.routers import code_execution
+from src.routers import code_execution, coding_challenges
 from src.routers import code_submissions
 from src.routers import health
 from src.routers import instance
@@ -270,6 +270,13 @@ v1_router.include_router(
     code_execution.router,
     prefix="/code",
     tags=["code-execution"],
+    dependencies=[Depends(require_authenticated_user)],
+)
+
+v1_router.include_router(
+    coding_challenges.router,
+    prefix="/coding-challenges",
+    tags=["coding-challenges"],
     dependencies=[Depends(require_authenticated_user)],
 )
 

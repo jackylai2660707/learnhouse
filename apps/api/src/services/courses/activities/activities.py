@@ -401,6 +401,16 @@ async def update_activity(
     if 'content' in update_data and isinstance(update_data['content'], str):
         logger.warning("[Activity Update] Content is STRING not dict for %s", activity_uuid)
 
+    if 'content' in update_data and isinstance(update_data['content'], dict):
+        from src.services.coding_challenges.challenges import sync_coding_challenges_for_activity
+
+        update_data['content'] = await sync_coding_challenges_for_activity(
+            activity,
+            course,
+            update_data['content'],
+            db_session,
+        )
+
     for field, value in update_data.items():
         setattr(activity, field, value)
 

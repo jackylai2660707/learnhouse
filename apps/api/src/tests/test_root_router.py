@@ -75,6 +75,7 @@ def _install_stub_modules(monkeypatch: pytest.MonkeyPatch) -> None:
         "admin",
         "analytics",
         "code_execution",
+        "coding_challenges",
         "code_submissions",
         "health",
         "instance",
@@ -332,6 +333,13 @@ class TestRootRouter:
             "get_authenticated_non_api_token_user",
             "require_plan_pro_api_access",
         ]
+
+        coding_challenges = next(
+            call for call in calls if call["router_name"] == "src.routers.coding_challenges"
+        )
+        assert coding_challenges["prefix"] == "/coding-challenges"
+        assert coding_challenges["tags"] == ["coding-challenges"]
+        assert _dependency_names(coding_challenges) == ["get_authenticated_non_api_token_user"]
 
         custom_domains_public = next(
             call
