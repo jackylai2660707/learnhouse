@@ -39,6 +39,10 @@ class SecurityConfig(BaseModel):
 class AIConfig(BaseModel):
     gemini_api_key: str | None
     is_ai_enabled: bool | None
+    provider: Literal["gemini", "openai_compatible"]
+    openai_base_url: str | None
+    openai_api_key: str | None
+    openai_model: str | None
 
 
 class S3ApiConfig(BaseModel):
@@ -358,9 +362,32 @@ def get_learnhouse_config() -> LearnHouseConfig:
     # AI Config
     env_gemini_api_key = os.environ.get("LEARNHOUSE_GEMINI_API_KEY")
     env_is_ai_enabled_str = os.environ.get("LEARNHOUSE_IS_AI_ENABLED")
+    env_ai_provider = os.environ.get("LEARNHOUSE_AI_PROVIDER")
+    env_openai_base_url = os.environ.get("LEARNHOUSE_OPENAI_BASE_URL")
+    env_openai_api_key = os.environ.get("LEARNHOUSE_OPENAI_API_KEY")
+    env_openai_model = os.environ.get("LEARNHOUSE_OPENAI_MODEL")
 
     gemini_api_key = env_gemini_api_key or yaml_config.get("ai_config", {}).get(
         "gemini_api_key"
+    )
+    ai_provider = (
+        env_ai_provider
+        or yaml_config.get("ai_config", {}).get("provider")
+        or ("openai_compatible" if env_openai_base_url or env_openai_api_key else "gemini")
+    )
+    if ai_provider not in ("gemini", "openai_compatible"):
+        ai_provider = "gemini"
+    openai_base_url = (
+        env_openai_base_url
+        or yaml_config.get("ai_config", {}).get("openai_base_url")
+    )
+    openai_api_key = (
+        env_openai_api_key
+        or yaml_config.get("ai_config", {}).get("openai_api_key")
+    )
+    openai_model = (
+        env_openai_model
+        or yaml_config.get("ai_config", {}).get("openai_model")
     )
     
     # Parse is_ai_enabled from env or yaml
@@ -541,6 +568,10 @@ def get_learnhouse_config() -> LearnHouseConfig:
     ai_config = AIConfig(
         gemini_api_key=gemini_api_key,
         is_ai_enabled=bool(is_ai_enabled),
+        provider=ai_provider,  # type: ignore[arg-type]
+        openai_base_url=openai_base_url.rstrip("/") if openai_base_url else None,
+        openai_api_key=openai_api_key,
+        openai_model=openai_model,
     )
 
     # Surface missing internal-service keys at boot rather than at first

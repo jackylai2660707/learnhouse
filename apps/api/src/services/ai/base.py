@@ -1,10 +1,12 @@
-from typing import Optional, Dict, Any, AsyncGenerator
+from dataclasses import dataclass
+from typing import Dict, Any, AsyncGenerator, Iterable
 from uuid import uuid4
 from datetime import datetime, timezone
 import logging
 import redis
 import json
 import asyncio
+import httpx
 from google import genai
 
 from config.config import get_learnhouse_config
@@ -13,9 +15,187 @@ logger = logging.getLogger(__name__)
 
 LH_CONFIG = get_learnhouse_config()
 
+
+@dataclass
+class _AITextResponse:
+    text: str
+
+
+@dataclass
+class _AITextChunk:
+    text: str
+
+
+def _get_config_value(config: Any, key: str, default: Any = None) -> Any:
+    if config is None:
+        return default
+    if isinstance(config, dict):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
+def _part_to_openai_content(part: Any) -> list[dict[str, Any]]:
+    if not isinstance(part, dict):
+        return [{"type": "text", "text": str(part)}]
+
+    if "text" in part:
+        return [{"type": "text", "text": part.get("text") or ""}]
+
+    inline_data = part.get("inline_data") or {}
+    if inline_data.get("mime_type", "").startswith("image/") and inline_data.get("data"):
+        return [{
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:{inline_data.get('mime_type')};base64,{inline_data.get('data')}"
+            },
+        }]
+    if inline_data:
+        return [{
+            "type": "text",
+            "text": f"[Attached file: {inline_data.get('mime_type', 'unknown mime type')}]",
+        }]
+
+    file_data = part.get("file_data") or {}
+    if file_data:
+        return [{
+            "type": "text",
+            "text": f"[Attached external file: {file_data.get('file_uri', '')}]",
+        }]
+
+    return [{"type": "text", "text": json.dumps(part)}]
+
+
+def _gemini_contents_to_openai_messages(contents: Any) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for item in contents or []:
+        if not isinstance(item, dict):
+            messages.append({"role": "user", "content": str(item)})
+            continue
+
+        raw_role = item.get("role") or "user"
+        role = "assistant" if raw_role == "model" else raw_role
+        if role not in {"system", "user", "assistant"}:
+            role = "user"
+
+        parts = item.get("parts")
+        if parts is None:
+            content = item.get("content", "")
+        else:
+            openai_parts: list[dict[str, Any]] = []
+            for part in parts:
+                openai_parts.extend(_part_to_openai_content(part))
+            text_only = all(part.get("type") == "text" for part in openai_parts)
+            content = "\n".join(part.get("text", "") for part in openai_parts) if text_only else openai_parts
+
+        messages.append({"role": role, "content": content})
+    return messages
+
+
+class _OpenAICompatibleModels:
+    def __init__(self, base_url: str, api_key: str, model: str):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+
+    def _payload(self, model: str | None, contents: Any, config: Any = None, stream: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": self.model or model,
+            "messages": _gemini_contents_to_openai_messages(contents),
+            "stream": stream,
+        }
+
+        temperature = _get_config_value(config, "temperature")
+        if temperature is not None:
+            payload["temperature"] = temperature
+
+        max_tokens = _get_config_value(config, "max_output_tokens")
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+
+        response_mime_type = _get_config_value(config, "response_mime_type")
+        if response_mime_type == "application/json":
+            payload["response_format"] = {"type": "json_object"}
+
+        return payload
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    def generate_content(self, *, model: str | None = None, contents: Any = None, config: Any = None) -> _AITextResponse:
+        response = httpx.post(
+            f"{self.base_url}/chat/completions",
+            headers=self._headers(),
+            json=self._payload(model, contents, config, stream=False),
+            timeout=120.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+        text = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content")
+            or data.get("choices", [{}])[0].get("text")
+            or ""
+        )
+        return _AITextResponse(text=text)
+
+    def generate_content_stream(self, *, model: str | None = None, contents: Any = None, config: Any = None) -> Iterable[_AITextChunk]:
+        with httpx.Client(timeout=None) as client:
+            with client.stream(
+                "POST",
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                json=self._payload(model, contents, config, stream=True),
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if line == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    choice = (data.get("choices") or [{}])[0]
+                    text = (
+                        choice.get("delta", {}).get("content")
+                        or choice.get("message", {}).get("content")
+                        or choice.get("text")
+                        or ""
+                    )
+                    if text:
+                        yield _AITextChunk(text=text)
+
+
+class _OpenAICompatibleClient:
+    def __init__(self, base_url: str, api_key: str, model: str):
+        self.models = _OpenAICompatibleModels(base_url, api_key, model)
+
+
 def get_gemini_client():
-    """Get Gemini client instance"""
-    api_key = getattr(LH_CONFIG.ai_config, 'gemini_api_key', None)
+    """Get the configured AI client.
+
+    The legacy name is kept so existing AI services can keep using the Gemini
+    SDK-shaped interface. When configured for an OpenAI-compatible provider,
+    this returns a small adapter that accepts the same generate_content calls.
+    """
+    ai_config = get_learnhouse_config().ai_config
+    provider = getattr(ai_config, "provider", "gemini")
+    if provider == "openai_compatible":
+        base_url = getattr(ai_config, "openai_base_url", None)
+        api_key = getattr(ai_config, "openai_api_key", None)
+        model = getattr(ai_config, "openai_model", None)
+        if not base_url or not api_key or not model:
+            raise Exception("OpenAI-compatible AI provider is not fully configured")
+        return _OpenAICompatibleClient(base_url=base_url, api_key=api_key, model=model)
+
+    api_key = getattr(ai_config, 'gemini_api_key', None)
     if not api_key:
         raise Exception("Gemini API key not configured")
     return genai.Client(api_key=api_key)
