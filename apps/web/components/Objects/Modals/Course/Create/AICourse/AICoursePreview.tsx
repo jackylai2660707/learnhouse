@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils'
 import Image from 'next/image'
 import lrnaiIcon from 'public/lrnai_icon.png'
 import toast from 'react-hot-toast'
-import type { CoursePlan, ChapterPlan, ActivityPlan, CreatedChapter } from '@services/ai/courseplanning'
+import type { CoursePlan, ChapterPlan, ActivityPlan, CreatedChapter, FinalizeCoursePlanResponse } from '@services/ai/courseplanning'
 import {
   generateActivityContent,
   parseActivityContentFromStream,
@@ -28,8 +28,12 @@ interface AICoursePreviewProps {
   isLoading: boolean
   streamingContent: string
   isCourseCreated: boolean
-  onCreateCourse: () => void
+  onCreateCourse: () => Promise<FinalizeCoursePlanResponse | null>
+  onCreateFullDraft: () => Promise<void>
   isCreatingCourse: boolean
+  isAutoBuilding: boolean
+  autoGenerateRunId: number
+  onAutoGenerateComplete: () => void
   onOpenInEditor: () => void
 }
 
@@ -53,12 +57,17 @@ function AICoursePreview({
   streamingContent,
   isCourseCreated,
   onCreateCourse,
+  onCreateFullDraft,
   isCreatingCourse,
+  isAutoBuilding,
+  autoGenerateRunId,
+  onAutoGenerateComplete,
   onOpenInEditor,
 }: AICoursePreviewProps) {
   const { t } = useTranslation()
   const [activeTab, setActiveTab] = React.useState<LeftTab>('plan')
   const [activityStates, setActivityStates] = React.useState<Record<string, ActivityGenState>>({})
+  const lastAutoGenerateRunRef = React.useRef(0)
 
   const totalActivities = createdChapters.reduce((sum, ch) => sum + ch.activities.length, 0)
   const generatedCount = Object.values(activityStates).filter((s) => s.isGenerated).length
@@ -69,8 +78,8 @@ function AICoursePreview({
     activityName: string,
     activityDescription: string,
     chapterName: string
-  ) => {
-    if (!sessionUuid || !plan) return
+  ): Promise<boolean> => {
+    if (!sessionUuid || !plan) return false
 
     setActivityStates((prev) => ({
       ...prev,
@@ -78,6 +87,7 @@ function AICoursePreview({
     }))
 
     let fullContent = ''
+    let didSave = false
 
     const onChunk = (chunk: string) => {
       fullContent += chunk
@@ -97,6 +107,7 @@ function AICoursePreview({
               ...prev,
               [activityUuid]: { isGenerating: false, isGenerated: true, streamContent: '', error: null },
             }))
+            didSave = true
           } else {
             throw new Error(result.data?.detail || 'Failed to save content')
           }
@@ -131,22 +142,49 @@ function AICoursePreview({
         chapterName, plan.name, plan.description, accessToken,
         onChunk, onComplete, onError
       )
+      return didSave
     } catch (error) {
       onError(error instanceof Error ? error.message : 'Unknown error')
+      return false
     }
   }
 
   const handleGenerateAll = async () => {
+    let failedCount = 0
     for (const chapter of createdChapters) {
       for (const activity of chapter.activities) {
         const state = activityStates[activity.activity_uuid]
         if (!state?.isGenerated && !state?.isGenerating) {
-          await handleGenerateContent(activity.activity_uuid, activity.name, activity.description, chapter.name)
+          const generated = await handleGenerateContent(activity.activity_uuid, activity.name, activity.description, chapter.name)
+          if (!generated) failedCount += 1
           await new Promise((resolve) => setTimeout(resolve, 1000))
         }
       }
     }
+    return failedCount
   }
+
+  React.useEffect(() => {
+    if (
+      autoGenerateRunId > 0 &&
+      autoGenerateRunId !== lastAutoGenerateRunRef.current &&
+      isCourseCreated &&
+      createdChapters.length > 0 &&
+      !isAnyGenerating
+    ) {
+      lastAutoGenerateRunRef.current = autoGenerateRunId
+      setActiveTab('content')
+      handleGenerateAll()
+        .then((failedCount) => {
+          if (failedCount === 0) {
+            toast.success(t('courses.create.ai.full_draft_created'))
+          } else {
+            toast.error(t('courses.create.ai.full_draft_partial'))
+          }
+        })
+        .finally(onAutoGenerateComplete)
+    }
+  }, [autoGenerateRunId, isCourseCreated, createdChapters.length])
 
   // The tabs + content are ALWAYS rendered with the same structure
   return (
@@ -201,7 +239,9 @@ function AICoursePreview({
             streamingContent={streamingContent}
             isCourseCreated={isCourseCreated}
             onCreateCourse={onCreateCourse}
+            onCreateFullDraft={onCreateFullDraft}
             isCreatingCourse={isCreatingCourse}
+            isAutoBuilding={isAutoBuilding}
             onOpenInEditor={onOpenInEditor}
           />
         ) : (
@@ -234,7 +274,9 @@ function PlanTabContent({
   streamingContent,
   isCourseCreated,
   onCreateCourse,
+  onCreateFullDraft,
   isCreatingCourse,
+  isAutoBuilding,
   onOpenInEditor,
 }: {
   plan: CoursePlan | null
@@ -242,8 +284,10 @@ function PlanTabContent({
   isLoading: boolean
   streamingContent: string
   isCourseCreated: boolean
-  onCreateCourse: () => void
+  onCreateCourse: () => Promise<FinalizeCoursePlanResponse | null>
+  onCreateFullDraft: () => Promise<void>
   isCreatingCourse: boolean
+  isAutoBuilding: boolean
   onOpenInEditor: () => void
 }) {
   const { t } = useTranslation()
@@ -318,22 +362,40 @@ function PlanTabContent({
         {/* Bottom actions - always visible */}
         <div className="pt-4 pb-8 flex justify-center gap-3">
           {!isCourseCreated ? (
-            <button
-              onClick={onCreateCourse}
-              disabled={isCreatingCourse || isLoading}
-              className={cn(
-                "flex items-center gap-2 px-8 py-3 rounded-xl text-sm font-semibold transition-all",
-                (isCreatingCourse || isLoading)
-                  ? "bg-white/5 text-white/30 cursor-not-allowed"
-                  : "bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 outline outline-1 outline-purple-500/30"
-              )}
-            >
-              {isCreatingCourse ? (
-                <><Loader2 className="w-4 h-4 animate-spin" />{t('courses.create.ai.creating_structure')}</>
-              ) : (
-                t('courses.create.ai.create_course')
-              )}
-            </button>
+            <>
+              <button
+                onClick={onCreateCourse}
+                disabled={isCreatingCourse || isLoading || isAutoBuilding}
+                className={cn(
+                  "flex items-center gap-2 px-8 py-3 rounded-xl text-sm font-semibold transition-all",
+                  (isCreatingCourse || isLoading || isAutoBuilding)
+                    ? "bg-white/5 text-white/30 cursor-not-allowed"
+                    : "bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 outline outline-1 outline-purple-500/30"
+                )}
+              >
+                {isCreatingCourse ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" />{t('courses.create.ai.creating_structure')}</>
+                ) : (
+                  t('courses.create.ai.create_course')
+                )}
+              </button>
+              <button
+                onClick={onCreateFullDraft}
+                disabled={isCreatingCourse || isLoading || isAutoBuilding}
+                className={cn(
+                  "flex items-center gap-2 px-8 py-3 rounded-xl text-sm font-semibold transition-all",
+                  (isCreatingCourse || isLoading || isAutoBuilding)
+                    ? "bg-white/5 text-white/30 cursor-not-allowed"
+                    : "bg-green-500/20 text-green-300 hover:bg-green-500/30 outline outline-1 outline-green-500/30"
+                )}
+              >
+                {isAutoBuilding ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" />{t('courses.create.ai.creating_full_draft')}</>
+                ) : (
+                  <><Sparkles className="w-4 h-4" />{t('courses.create.ai.create_full_draft')}</>
+                )}
+              </button>
+            </>
           ) : (
             <button
               onClick={onOpenInEditor}
@@ -369,8 +431,8 @@ function ContentTabContent({
   createdChapters: CreatedChapter[]
   isCourseCreated: boolean
   activityStates: Record<string, ActivityGenState>
-  onGenerateContent: (uuid: string, name: string, desc: string, chapterName: string) => void
-  onGenerateAll: () => void
+  onGenerateContent: (uuid: string, name: string, desc: string, chapterName: string) => Promise<boolean>
+  onGenerateAll: () => Promise<number>
   totalActivities: number
   generatedCount: number
   isAnyGenerating: boolean

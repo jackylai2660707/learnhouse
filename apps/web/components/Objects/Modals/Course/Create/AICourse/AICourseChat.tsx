@@ -26,6 +26,12 @@ const SUGGESTION_CHIPS = [
   { label: 'Design', prompt: 'Create a UI/UX design course covering design principles, Figma, user research, and prototyping' },
 ]
 
+const ATTACHMENT_ONLY_PROMPT = [
+  'Analyze the attached PDF/images/documents and create a complete publishable online course from them.',
+  'Infer the topic, target audience, chapter structure, learning objectives, activities, examples, practice tasks, and assessments from the uploaded materials.',
+  'Make the course practical, well sequenced, and ready for a teacher to review and publish.',
+].join(' ')
+
 function AICourseChat({
   messages,
   iterationCount,
@@ -83,7 +89,8 @@ function AICourseChat({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (canSendMessage) {
-      onSendMessage(inputValue.trim(), attachments.length > 0 ? attachments : undefined)
+      const message = inputValue.trim() || ATTACHMENT_ONLY_PROMPT
+      onSendMessage(message, attachments.length > 0 ? attachments : undefined)
       setInputValue('')
       setAttachments([])
     }

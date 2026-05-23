@@ -16,6 +16,7 @@ import {
   startCoursePlanningSession,
   iterateCoursePlanning,
   finalizeCoursePlan,
+  type FinalizeCoursePlanResponse,
   parseCoursePlanFromStream,
   ENABLE_ACTIVITY_CONTENT_GENERATION,
 } from '@services/ai/courseplanning'
@@ -51,6 +52,8 @@ function AICourseCreationModal({
   const [createdChapters, setCreatedChapters] = React.useState<CreatedChapter[]>([])
   const [courseUuid, setCourseUuid] = React.useState<string | null>(null)
   const [isFinalizingPlan, setIsFinalizingPlan] = React.useState(false)
+  const [isAutoBuilding, setIsAutoBuilding] = React.useState(false)
+  const [autoGenerateRunId, setAutoGenerateRunId] = React.useState(0)
   const [hasVideoAttachment, setHasVideoAttachment] = React.useState(false)
 
   const isCourseCreated = courseUuid !== null
@@ -66,6 +69,8 @@ function AICourseCreationModal({
       setCreatedChapters([])
       setCourseUuid(null)
       setIsFinalizingPlan(false)
+      setIsAutoBuilding(false)
+      setAutoGenerateRunId(0)
       setHasVideoAttachment(false)
     }
   }, [isOpen])
@@ -145,8 +150,8 @@ function AICourseCreationModal({
     setCurrentPlan(updatedPlan)
   }
 
-  const handleCreateCourse = async () => {
-    if (!sessionUuid || !currentPlan) return
+  const handleCreateCourse = async (): Promise<FinalizeCoursePlanResponse | null> => {
+    if (!sessionUuid || !currentPlan) return null
 
     setIsFinalizingPlan(true)
     setError(null)
@@ -158,17 +163,36 @@ function AICourseCreationModal({
         setCourseUuid(result.data.course_uuid)
         setCreatedChapters(result.data.chapters)
         toast.success(t('courses.create.ai.course_created_success'))
+        return result.data
       } else {
         setError(result.error || 'Failed to create course')
         toast.error(result.error || t('courses.create.ai.failed_to_create'))
+        return null
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Unknown error'
       setError(errorMsg)
       toast.error(errorMsg)
+      return null
     } finally {
       setIsFinalizingPlan(false)
     }
+  }
+
+  const handleCreateFullDraft = async () => {
+    if (isAutoBuilding || !currentPlan) return
+    setIsAutoBuilding(true)
+
+    const created = isCourseCreated
+      ? { course_uuid: courseUuid!, course_id: 0, chapters: createdChapters }
+      : await handleCreateCourse()
+
+    if (!created) {
+      setIsAutoBuilding(false)
+      return
+    }
+
+    setAutoGenerateRunId((value) => value + 1)
   }
 
   const handleOpenInEditor = () => {
@@ -239,13 +263,13 @@ function AICourseCreationModal({
                 {!isCourseCreated && currentPlan && (
                   <button
                     onClick={handleCreateCourse}
-                    disabled={isFinalizingPlan || isLoading}
+                    disabled={isFinalizingPlan || isLoading || isAutoBuilding}
                     className={cn(
                       "flex items-center gap-2 px-4 py-1.5 rounded-xl text-xs font-semibold transition-all",
                       ENABLE_ACTIVITY_CONTENT_GENERATION
                         ? "bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 outline outline-1 outline-purple-500/30"
                         : "bg-green-500/20 text-green-300 hover:bg-green-500/30 outline outline-1 outline-green-500/30",
-                      (isFinalizingPlan || isLoading) && "opacity-50 cursor-not-allowed"
+                      (isFinalizingPlan || isLoading || isAutoBuilding) && "opacity-50 cursor-not-allowed"
                     )}
                   >
                     {isFinalizingPlan ? (
@@ -291,7 +315,11 @@ function AICourseCreationModal({
                   streamingContent={streamingContent}
                   isCourseCreated={isCourseCreated}
                   onCreateCourse={handleCreateCourse}
+                  onCreateFullDraft={handleCreateFullDraft}
                   isCreatingCourse={isFinalizingPlan}
+                  isAutoBuilding={isAutoBuilding}
+                  autoGenerateRunId={autoGenerateRunId}
+                  onAutoGenerateComplete={() => setIsAutoBuilding(false)}
                   onOpenInEditor={handleOpenInEditor}
                 />
               </div>
