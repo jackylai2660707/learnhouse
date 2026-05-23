@@ -286,7 +286,7 @@ interface TestResult {
   label: string
   passed: boolean
   actual_stdout: string | null
-  expected_stdout: string
+  expected_stdout: string | null
   stderr: string | null
   compile_output: string | null
   status: { id: number; description: string } | null
@@ -296,6 +296,7 @@ interface TestResult {
 
 type RightTab = 'description' | 'tests' | 'output' | 'history'
 type Difficulty = 'easy' | 'medium' | 'hard'
+type SolutionVisibility = 'never' | 'after_pass' | 'always'
 
 const DIFFICULTY_CONFIG: Record<
   Difficulty,
@@ -434,13 +435,16 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
 
   const languageId: number = node.attrs.languageId
   const languageName: string = node.attrs.languageName
+  const challengeUuid: string = node.attrs.challengeUuid || ''
+  const required: boolean = node.attrs.required ?? true
   const starterCode: string = node.attrs.starterCode
   const testCases: TestCase[] = node.attrs.testCases || []
+  const hiddenTestCases: TestCase[] = node.attrs.hiddenTestCases || []
   const description: string = node.attrs.description || ''
   const hints: string[] = node.attrs.hints || []
   const difficulty: Difficulty = node.attrs.difficulty || 'medium'
   const solutionCode: string = node.attrs.solutionCode || ''
-  const maxAttemptsBeforeReveal: number = node.attrs.maxAttemptsBeforeReveal ?? 3
+  const solutionVisibility: SolutionVisibility = node.attrs.solutionVisibility || 'after_pass'
   const timeComplexity: string = node.attrs.timeComplexity || ''
   const spaceComplexity: string = node.attrs.spaceComplexity || ''
   const timeLimitMs: number = node.attrs.timeLimitMs ?? 10000
@@ -458,13 +462,14 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
   const [code, setCode] = useState(starterCode)
   const [results, setResults] = useState<TestResult[] | null>(null)
   const [isRunning, setIsRunning] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [extensions, setExtensions] = useState<any[]>([])
   const [showLangDropdown, setShowLangDropdown] = useState(false)
   const [activeTab, setActiveTab] = useState<RightTab>('description')
   const [expandedHints, setExpandedHints] = useState<Set<number>>(new Set())
 
   // Feature 3: Solution Reveal
-  const [attemptCount, setAttemptCount] = useState(0)
+  const [, setAttemptCount] = useState(0)
   const [showSolution, setShowSolution] = useState(false)
   const [solutionExtensions, setSolutionExtensions] = useState<any[]>([])
   const [solutionView, setSolutionView] = useState<'diff' | 'solution'>('diff')
@@ -491,6 +496,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
   // Feature 9: Line-level error annotations
   const parsedErrorsRef = useRef<ReturnType<typeof parseErrors>>([])
   const cmViewRef = useRef<any>(null)
+  const fetchedChallengeRef = useRef<string | null>(null)
 
   // Feature: Timed Challenge
   const [challengeStarted, setChallengeStarted] = useState(false)
@@ -503,6 +509,36 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
 
   // Feature 17: Copy output
   const outputCopy = useCopyToClipboard()
+
+  useEffect(() => {
+    if (!isEditable) return
+    const nextAttrs: Record<string, string> = {}
+    if (!node.attrs.id) nextAttrs.id = `block_${uuidv4()}`
+    if (!node.attrs.challengeUuid) nextAttrs.challengeUuid = `challenge_${uuidv4()}`
+    if (Object.keys(nextAttrs).length > 0) updateAttributes(nextAttrs)
+  }, [isEditable, node.attrs.id, node.attrs.challengeUuid, updateAttributes])
+
+  useEffect(() => {
+    if (!isEditable || !challengeUuid || !accessToken) return
+    if (fetchedChallengeRef.current === challengeUuid) return
+    fetchedChallengeRef.current = challengeUuid
+    fetch(`${getAPIUrl()}coding-challenges/${challengeUuid}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+      .then(async (resp) => {
+        if (!resp.ok) return null
+        return resp.json()
+      })
+      .then((data) => {
+        if (!data) return
+        updateAttributes({
+          required: data.required,
+          solutionVisibility: data.solutionVisibility || solutionVisibility,
+          hiddenTestCases: data.hiddenTestCases || [],
+        })
+      })
+      .catch(console.error)
+  }, [isEditable, challengeUuid, accessToken, updateAttributes, solutionVisibility])
 
   // Load CodeMirror extensions
   useEffect(() => {
@@ -680,6 +716,34 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
     [testCases, updateAttributes]
   )
 
+  const addHiddenTestCase = useCallback(() => {
+    const newTC: TestCase = {
+      id: uuidv4(),
+      label: `Hidden Test ${hiddenTestCases.length + 1}`,
+      stdin: '',
+      expectedStdout: '',
+    }
+    updateAttributes({ hiddenTestCases: [...hiddenTestCases, newTC] })
+  }, [hiddenTestCases, updateAttributes])
+
+  const removeHiddenTestCase = useCallback(
+    (id: string) => {
+      updateAttributes({ hiddenTestCases: hiddenTestCases.filter((tc) => tc.id !== id) })
+    },
+    [hiddenTestCases, updateAttributes]
+  )
+
+  const updateHiddenTestCase = useCallback(
+    (id: string, field: keyof TestCase, value: string) => {
+      updateAttributes({
+        hiddenTestCases: hiddenTestCases.map((tc) =>
+          tc.id === id ? { ...tc, [field]: value } : tc
+        ),
+      })
+    },
+    [hiddenTestCases, updateAttributes]
+  )
+
   const addStudentTestCase = useCallback(() => {
     setStudentTestCases((prev) => [
       ...prev,
@@ -801,6 +865,25 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
     }
 
     try {
+      if (!isEditable && challengeUuid) {
+        const resp = await fetch(`${getAPIUrl()}coding-challenges/${challengeUuid}/run`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ source_code: code }),
+        })
+        const data = await resp.json()
+        if (!resp.ok) throw new Error(data.detail || 'Code execution failed')
+        setResults(data.results || [])
+        const firstResult = data.results?.[0]
+        parsedErrorsRef.current = parseErrors(firstResult?.stderr || null, firstResult?.compile_output || null)
+        if (cmViewRef.current) cmViewRef.current.dispatch({})
+        setActiveTab('output')
+        return
+      }
+
       if (allTestCases.length === 0) {
         const resp = await fetch(`${getAPIUrl()}code/execute`, {
           method: 'POST',
@@ -903,7 +986,36 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
     } finally {
       setIsRunning(false)
     }
-  }, [isRunning, accessToken, testCases, languageId, code, isEditable, isSqlLanguage, sqliteDbPath, activityUuid, blockId, timedMode, challengeExpired])
+  }, [isRunning, accessToken, testCases, languageId, code, isEditable, isSqlLanguage, sqliteDbPath, activityUuid, blockId, timedMode, challengeExpired, challengeUuid])
+
+  const submitChallenge = useCallback(async () => {
+    if (timedMode && challengeExpired) return
+    if (isEditable || !challengeUuid || !accessToken || isSubmitting) return
+    setIsSubmitting(true)
+    setResults(null)
+    setAttemptCount((prev) => prev + 1)
+    try {
+      const resp = await fetch(`${getAPIUrl()}coding-challenges/${challengeUuid}/submit`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ source_code: code }),
+      })
+      const data = await resp.json()
+      if (!resp.ok) throw new Error(data.detail || 'Challenge submission failed')
+      setResults(data.results || [])
+      const firstResult = data.results?.[0]
+      parsedErrorsRef.current = parseErrors(firstResult?.stderr || null, firstResult?.compile_output || null)
+      if (cmViewRef.current) cmViewRef.current.dispatch({})
+      setActiveTab('output')
+    } catch (err) {
+      console.error('Challenge submission error:', err)
+    } finally {
+      setIsSubmitting(false)
+    }
+  }, [accessToken, challengeExpired, challengeUuid, code, isEditable, isSubmitting, timedMode])
 
   const runCodeRef = useRef(runCode)
   const resetCodeRef = useRef(resetCode)
@@ -943,11 +1055,14 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
     .join('\n')
   const executionTime = results?.[0]?.time
 
-  // Feature 3: Can reveal solution?
+  // Solution reveal policy for coding challenges.
   const canRevealSolution =
-    solutionCode &&
+    Boolean(solutionCode) &&
     !isEditable &&
-    attemptCount >= maxAttemptsBeforeReveal
+    (
+      solutionVisibility === 'always' ||
+      (solutionVisibility === 'after_pass' && Boolean(allPassed))
+    )
 
   // Feature 10: Timer state
   const timerProgress = Math.min((elapsedMs / timeLimitMs) * 100, 100)
@@ -1047,6 +1162,20 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
               })}
             </div>
           </div>
+          <div className="flex items-center justify-between rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5 nice-shadow">
+            <div>
+              <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider block">
+                Required Challenge
+              </label>
+              <p className="text-[10px] text-neutral-400">Learners complete the activity after required challenges pass.</p>
+            </div>
+            <button
+              onClick={() => updateAttributes({ required: !required })}
+              className={`w-10 h-5 rounded-full transition-colors ${required ? 'bg-emerald-500' : 'bg-neutral-200'}`}
+            >
+              <span className={`block w-4 h-4 rounded-full bg-white transition-transform shadow-sm ${required ? 'translate-x-5' : 'translate-x-0.5'}`} />
+            </button>
+          </div>
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">Hints</label>
@@ -1139,8 +1268,12 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                 </div>
                 <div className="flex gap-3">
                   <div className="flex-1">
-                    <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider mb-1 block">Attempts to unlock</label>
-                    <input type="number" min={1} value={maxAttemptsBeforeReveal} onChange={(e) => updateAttributes({ maxAttemptsBeforeReveal: parseInt(e.target.value) || 3 })} className="w-full text-[12px] text-neutral-700 bg-neutral-50 border border-neutral-200 rounded-lg px-3 py-2 outline-none focus:border-neutral-300 transition-colors nice-shadow" />
+                    <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider mb-1 block">Solution Visibility</label>
+                    <select value={solutionVisibility} onChange={(e) => updateAttributes({ solutionVisibility: e.target.value })} className="w-full text-[12px] text-neutral-700 bg-neutral-50 border border-neutral-200 rounded-lg px-3 py-2 outline-none focus:border-neutral-300 transition-colors appearance-none cursor-pointer nice-shadow">
+                      <option value="after_pass">After pass</option>
+                      <option value="always">Always</option>
+                      <option value="never">Never</option>
+                    </select>
                   </div>
                   <div className="flex-1">
                     <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider mb-1 block">Time Limit</label>
@@ -1285,7 +1418,11 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
               ) : (
                 <div className="flex items-center gap-2 text-[11px] text-neutral-400">
                   <Lock size={11} />
-                  <span>Solution available after {maxAttemptsBeforeReveal - attemptCount} more {maxAttemptsBeforeReveal - attemptCount === 1 ? 'attempt' : 'attempts'}</span>
+                  <span>
+                    {solutionVisibility === 'never'
+                      ? 'Solution is hidden for this challenge'
+                      : 'Solution unlocks after your submission passes'}
+                  </span>
                 </div>
               )}
               {showSolution && canRevealSolution && (
@@ -1416,6 +1553,61 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
               </div>
             )
           })}
+        </div>
+      )}
+      {isEditable && (
+        <div className="mt-4 pt-3 border-t border-neutral-100">
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider flex items-center gap-1.5">
+              <Lock size={11} /> Hidden Tests
+            </label>
+            <button onClick={addHiddenTestCase} className="flex items-center gap-1 text-[11px] font-medium text-neutral-400 hover:text-neutral-600 transition-colors">
+              <Plus size={11} /> Add
+            </button>
+          </div>
+          <p className="text-[11px] text-neutral-400 mb-2">
+            Hidden tests run only on Submit and are stored server-side.
+          </p>
+          {hiddenTestCases.length === 0 && (
+            <p className="text-[11px] text-neutral-400 italic">No hidden tests configured.</p>
+          )}
+          {hiddenTestCases.map((tc) => (
+            <div key={tc.id} className="mb-3 rounded-lg border border-neutral-200 bg-neutral-50/50 p-2.5 nice-shadow">
+              <div className="flex items-center gap-2 mb-2">
+                <input
+                  value={tc.label}
+                  onChange={(e) => updateHiddenTestCase(tc.id, 'label', e.target.value)}
+                  className="flex-1 text-[12px] font-semibold text-neutral-700 bg-white border border-neutral-200 rounded px-2 py-1 outline-none focus:border-neutral-300"
+                  placeholder="Hidden test label"
+                />
+                <button onClick={() => removeHiddenTestCase(tc.id)} className="p-1 hover:bg-red-50 rounded transition-colors">
+                  <Trash2 size={11} className="text-red-400" />
+                </button>
+              </div>
+              <div className="space-y-1.5">
+                <div>
+                  <label className="text-[9px] font-semibold text-neutral-400 uppercase">Input</label>
+                  <textarea
+                    value={tc.stdin}
+                    onChange={(e) => updateHiddenTestCase(tc.id, 'stdin', e.target.value)}
+                    className="w-full text-[11px] font-mono text-neutral-700 bg-white border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-neutral-300 resize-none"
+                    rows={2}
+                    placeholder="stdin..."
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-semibold text-neutral-400 uppercase">Expected Output</label>
+                  <textarea
+                    value={tc.expectedStdout}
+                    onChange={(e) => updateHiddenTestCase(tc.id, 'expectedStdout', e.target.value)}
+                    className="w-full text-[11px] font-mono text-neutral-700 bg-white border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-neutral-300 resize-none"
+                    rows={2}
+                    placeholder="expected stdout..."
+                  />
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       )}
       {!isEditable && (
@@ -1836,9 +2028,9 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
               <div className="flex items-center gap-3 px-4 py-2.5">
                 <button
                   onClick={runCode}
-                  disabled={isRunning || !accessToken}
+                  disabled={isRunning || isSubmitting || !accessToken}
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold transition-all ${
-                    isRunning
+                    isRunning || isSubmitting
                       ? 'bg-white/[0.06] text-neutral-500 cursor-not-allowed'
                       : 'bg-white/[0.10] hover:bg-white/[0.14] text-neutral-200'
                   }`}
@@ -1848,8 +2040,26 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                   ) : (
                     <Play size={14} />
                   )}
-                  {isEditable ? 'Test Run' : 'Run Code'}
+                  {isEditable ? 'Test Run' : 'Run'}
                 </button>
+                {!isEditable && (
+                  <button
+                    onClick={submitChallenge}
+                    disabled={isRunning || isSubmitting || !accessToken || !challengeUuid}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold transition-all ${
+                      isSubmitting
+                        ? 'bg-emerald-500/10 text-emerald-700 cursor-not-allowed'
+                        : 'bg-emerald-400 hover:bg-emerald-300 text-neutral-950'
+                    }`}
+                  >
+                    {isSubmitting ? (
+                      <Loader2 size={14} className="animate-spin" />
+                    ) : (
+                      <ClipboardCheck size={14} />
+                    )}
+                    Submit
+                  </button>
+                )}
                 <span className="text-[10px] text-neutral-500 hidden sm:inline">
                   {typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+Enter
                 </span>

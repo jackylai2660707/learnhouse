@@ -170,8 +170,27 @@ async def sync_coding_challenges_for_activity(
         await db_session.flush()
         seen_challenge_ids.add(challenge.id or 0)
 
+        old_tests = (
+            await db_session.execute(
+                select(CodingChallengeTest).where(CodingChallengeTest.challenge_id == challenge.id)
+            )
+        ).scalars().all()
+
         raw_tests = _ensure_list(attrs.get("testCases"))
-        raw_hidden_tests = _ensure_list(attrs.get("hiddenTestCases"))
+        if "hiddenTestCases" in attrs:
+            raw_hidden_tests = _ensure_list(attrs.get("hiddenTestCases"))
+        else:
+            raw_hidden_tests = [
+                {
+                    "testUuid": test.test_uuid,
+                    "label": test.label,
+                    "stdin": test.stdin,
+                    "expectedStdout": test.expected_stdout,
+                    "visibility": CodingChallengeTestVisibility.HIDDEN.value,
+                }
+                for test in old_tests
+                if test.visibility == CodingChallengeTestVisibility.HIDDEN
+            ]
         normalized_tests = [
             _test_from_attrs(raw, idx, CodingChallengeTestVisibility.VISIBLE)
             for idx, raw in enumerate(raw_tests)
@@ -180,11 +199,6 @@ async def sync_coding_challenges_for_activity(
             for idx, raw in enumerate(raw_hidden_tests)
         ]
 
-        old_tests = (
-            await db_session.execute(
-                select(CodingChallengeTest).where(CodingChallengeTest.challenge_id == challenge.id)
-            )
-        ).scalars().all()
         old_by_uuid = {t.test_uuid: t for t in old_tests}
         kept_uuids: set[str] = set()
         for test_data in normalized_tests:
@@ -349,6 +363,63 @@ async def run_visible_tests(
         "passed": bool(results) and all(r["passed"] for r in results),
         "total_tests": len(results),
         "passed_tests": len([r for r in results if r["passed"]]),
+    }
+
+
+async def get_challenge_editor_payload(
+    challenge_uuid: str,
+    request: Request,
+    current_user: PublicUser,
+    db_session: AsyncSession,
+) -> dict:
+    challenge, course = await _load_challenge(challenge_uuid, request, current_user, db_session)
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.UPDATE)
+    tests = (
+        await db_session.execute(
+            select(CodingChallengeTest)
+            .where(CodingChallengeTest.challenge_id == challenge.id)
+            .order_by(CodingChallengeTest.order)
+        )
+    ).scalars().all()
+
+    def test_payload(test: CodingChallengeTest) -> dict:
+        return {
+            "id": test.test_uuid,
+            "testUuid": test.test_uuid,
+            "label": test.label,
+            "stdin": test.stdin,
+            "expectedStdout": test.expected_stdout,
+            "hidden": test.visibility == CodingChallengeTestVisibility.HIDDEN,
+            "visibility": test.visibility.value,
+        }
+
+    return {
+        "challengeUuid": challenge.challenge_uuid,
+        "blockId": challenge.block_id,
+        "required": challenge.required,
+        "languageId": challenge.language_id,
+        "title": challenge.title,
+        "description": challenge.description,
+        "starterCode": challenge.starter_code,
+        "solutionCode": challenge.solution_code,
+        "solutionVisibility": challenge.solution_visibility.value,
+        "hints": challenge.hints,
+        "difficulty": challenge.difficulty,
+        "timeLimitMs": challenge.time_limit_ms,
+        "sqliteDbPath": challenge.sqlite_db_path,
+        "additionalFiles": challenge.additional_files,
+        "tags": challenge.tags,
+        "extraMetadata": challenge.extra_metadata,
+        "testCases": [
+            test_payload(test)
+            for test in tests
+            if test.visibility == CodingChallengeTestVisibility.VISIBLE
+        ],
+        "hiddenTestCases": [
+            test_payload(test)
+            for test in tests
+            if test.visibility == CodingChallengeTestVisibility.HIDDEN
+        ],
     }
 
 

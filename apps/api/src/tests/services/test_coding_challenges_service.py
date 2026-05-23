@@ -11,6 +11,7 @@ from src.db.coding_challenges import (
     CodingChallengeTestVisibility,
 )
 from src.services.coding_challenges.challenges import (
+    get_challenge_editor_payload,
     run_visible_tests,
     submit_challenge,
     sync_coding_challenges_for_activity,
@@ -130,6 +131,57 @@ async def test_sync_persists_hidden_tests_but_strips_them_from_activity_content(
     assert tests[0].visibility == CodingChallengeTestVisibility.VISIBLE
     assert tests[1].visibility == CodingChallengeTestVisibility.HIDDEN
     assert tests[1].expected_stdout == "42\n"
+
+
+@pytest.mark.asyncio
+async def test_sync_preserves_hidden_tests_when_sanitized_content_is_saved_again(
+    db, course, activity
+):
+    sanitized = await sync_coding_challenges_for_activity(activity, course, _challenge_content(), db)
+    await db.commit()
+
+    await sync_coding_challenges_for_activity(activity, course, sanitized, db)
+    await db.commit()
+
+    challenge = (
+        await db.execute(
+            select(CodingChallenge).where(CodingChallenge.challenge_uuid == "challenge_1")
+        )
+    ).scalars().one()
+    hidden_tests = (
+        await db.execute(
+            select(CodingChallengeTest).where(
+                CodingChallengeTest.challenge_id == challenge.id,
+                CodingChallengeTest.visibility == CodingChallengeTestVisibility.HIDDEN,
+            )
+        )
+    ).scalars().all()
+
+    assert [test.test_uuid for test in hidden_tests] == ["hidden_1"]
+    assert hidden_tests[0].expected_stdout == "42\n"
+
+
+@pytest.mark.asyncio
+async def test_teacher_can_load_hidden_tests_for_editor(
+    db, org, course, activity, admin_user, mock_request
+):
+    await _create_challenge(db, org, course, activity)
+
+    with patch(
+        "src.services.coding_challenges.challenges.check_resource_access",
+        new_callable=AsyncMock,
+    ):
+        payload = await get_challenge_editor_payload(
+            "challenge_submit",
+            mock_request,
+            admin_user,
+            db,
+        )
+
+    assert payload["challengeUuid"] == "challenge_submit"
+    assert [test["testUuid"] for test in payload["testCases"]] == ["visible_submit"]
+    assert [test["testUuid"] for test in payload["hiddenTestCases"]] == ["hidden_submit"]
+    assert payload["hiddenTestCases"][0]["expectedStdout"] == "ok\n"
 
 
 @pytest.mark.asyncio

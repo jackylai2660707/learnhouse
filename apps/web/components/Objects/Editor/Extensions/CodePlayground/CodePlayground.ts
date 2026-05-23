@@ -23,10 +23,22 @@ export default Node.create({
       languageName: {
         default: 'Python 3',
       },
+      id: {
+        default: '',
+      },
+      challengeUuid: {
+        default: '',
+      },
+      required: {
+        default: true,
+      },
       starterCode: {
         default: '# Write your code here\n',
       },
       testCases: {
+        default: [],
+      },
+      hiddenTestCases: {
         default: [],
       },
       description: {
@@ -40,6 +52,9 @@ export default Node.create({
       },
       solutionCode: {
         default: '',
+      },
+      solutionVisibility: {
+        default: 'after_pass',
       },
       maxAttemptsBeforeReveal: {
         default: 3,
