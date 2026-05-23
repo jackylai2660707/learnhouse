@@ -1,0 +1,8 @@
+services:
+  learnhouse-app:
+    image: learnhouse-local:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        LEARNHOUSE_PUBLIC: "true"

@@ -1,0 +1,74 @@
+name: learnhouse-df0b43c5
+
+services:
+  learnhouse-app:
+    image: ghcr.io/learnhouse/app:latest
+    container_name: learnhouse-app-df0b43c5
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - HOSTNAME=0.0.0.0
+      - LEARNHOUSE_API_URL=http://localhost:9000
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      learnhouse-network-df0b43c5:
+      caddy_net:
+        aliases:
+          - learnhouse-app
+    volumes:
+      - learnhouse_content_data_df0b43c5:/app/api/content
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: learnhouse-db-df0b43c5
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-learnhouse}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-learnhouse}
+      - POSTGRES_DB=${POSTGRES_DB:-learnhouse}
+    volumes:
+      - learnhouse_db_data_df0b43c5:/var/lib/postgresql/data
+    networks:
+      - learnhouse-network-df0b43c5
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-learnhouse}"]
+      interval: 5s
+      timeout: 4s
+      retries: 5
+
+  redis:
+    image: redis:7.2.3-alpine
+    container_name: learnhouse-redis-df0b43c5
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - learnhouse_redis_data_df0b43c5:/data
+    networks:
+      - learnhouse-network-df0b43c5
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 4s
+      retries: 5
+
+networks:
+  learnhouse-network-df0b43c5:
+    driver: bridge
+  caddy_net:
+    external: true
+
+volumes:
+  learnhouse_db_data_df0b43c5:
+  learnhouse_redis_data_df0b43c5:
+  learnhouse_content_data_df0b43c5:
