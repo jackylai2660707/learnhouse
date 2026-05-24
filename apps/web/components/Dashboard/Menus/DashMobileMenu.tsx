@@ -23,6 +23,7 @@ import {
   ChatCircleDots,
   Book,
   Question,
+  ClipboardText,
   CaretDown,
   MagnifyingGlass,
 } from '@phosphor-icons/react'
@@ -220,6 +221,7 @@ function DashMobileMenu() {
                 <PanelItem href="/dash/courses" icon={<BookOpen size={15} weight="fill" />} label={t('courses.courses')} active={isActive('/dash/courses')} onClick={close} />
                 <PanelItem href="/dash/assignments" icon={<Files size={15} weight="fill" />} label={t('common.assignments')} active={isActive('/dash/assignments')} onClick={close} />
                 <PanelItem href="/dash/question-bank" icon={<Question size={15} weight="fill" />} label="Question bank" active={isActive('/dash/question-bank')} onClick={close} />
+                <PanelItem href="/dash/self-tests" icon={<ClipboardText size={15} weight="fill" />} label="Self-tests" active={isActive('/dash/self-tests')} onClick={close} />
                 <PanelItem href="/dash/users/settings/users" icon={<Users size={15} weight="fill" />} label={t('common.users')} active={isActive('/dash/users')} onClick={close} />
                 {isEnabled('communities') && <PanelItem href="/dash/communities" icon={<ChatsCircle size={15} weight="fill" />} label={t('communities.title')} active={isActive('/dash/communities')} onClick={close} />}
                 {isEnabled('podcasts') && <PanelItem href="/dash/podcasts" icon={<Headphones size={15} weight="fill" />} label={t('podcasts.podcasts')} active={isActive('/dash/podcasts')} onClick={close} />}

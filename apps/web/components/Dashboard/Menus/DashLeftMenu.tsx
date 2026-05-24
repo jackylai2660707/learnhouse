@@ -404,6 +404,13 @@ function DashLeftMenu() {
               isCollapsed={isCollapsed}
               active={isActivePath('/dash/question-bank')}
             />
+            <MenuLink
+              href="/dash/self-tests"
+              icon={<ClipboardText size={20} weight="fill" />}
+              label="Self-tests"
+              isCollapsed={isCollapsed}
+              active={isActivePath('/dash/self-tests')}
+            />
             {showCommunities && (
               <MenuLink
                 href="/dash/communities"

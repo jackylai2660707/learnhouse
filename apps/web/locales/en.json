@@ -3482,6 +3482,11 @@
       "subtitle": "Reusable, shared, classified homework questions for teachers.",
       "keywords": "question bank questions homework reusable shared"
     },
+    "self_tests": {
+      "title": "Self-tests",
+      "subtitle": "Student practice attempts drawn from the shared question bank.",
+      "keywords": "self-test practice quiz attempts grading records"
+    },
     "assignments": {
       "home": {
         "title": "Assignments",

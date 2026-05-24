@@ -25,6 +25,7 @@ import {
   SquaresFour,
   ChalkboardSimple,
   Signpost,
+  ClipboardText,
 } from '@phosphor-icons/react'
 import { DiscordIcon } from '@components/Objects/Icons/DiscordIcon'
 import {
@@ -194,6 +195,27 @@ export const OrgMenu = (props: any) => {
                     </TooltipTrigger>
                     <TooltipContent side="bottom" className="text-xs">
                       {t('courses.progress')}
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
+            </AuthenticatedClientElement>
+            {/* Self-test */}
+            <AuthenticatedClientElement checkMethod="authentication">
+              <div className="hidden md:flex">
+                <TooltipProvider delayDuration={0}>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Link
+                        href={getUriWithOrg(orgslug, '/self-test')}
+                        className={`p-2 rounded-lg transition-colors ${colors.iconBtn}`}
+                        aria-label="Self-test"
+                      >
+                        <ClipboardText size={20} weight="fill" />
+                      </Link>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom" className="text-xs">
+                      Self-test
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>

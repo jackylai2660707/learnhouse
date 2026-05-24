@@ -3221,6 +3221,11 @@
       "subtitle": "给老师复用、共享、分类沉淀的作业题。",
       "keywords": "题库 题目 作业 共享 复用 分类"
     },
+    "self_tests": {
+      "title": "自测",
+      "subtitle": "学生从共享题库随机抽题练习，保留可评分记录。",
+      "keywords": "自测 练习 测验 记录 评分"
+    },
     "assignments": {
       "home": {
         "title": "作业",
