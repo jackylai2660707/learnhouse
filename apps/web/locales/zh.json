@@ -3314,6 +3314,32 @@
             "description": "学生输入一个数字，带容差评分"
           }
         },
+        "ai_generator": {
+          "title": "AI 出题器",
+          "subtitle": "根据老师要求快速生成可自动批改的作业题。",
+          "prompt_placeholder": "例如：为初学者生成 Python 循环练习，包含选择题、数字答案题，以及一道带测试用例的编程题。",
+          "prompt_required": "请描述这份作业要考什么。",
+          "count": "题数",
+          "difficulty": "难度",
+          "difficulties": {
+            "beginner": "入门",
+            "intermediate": "中等",
+            "advanced": "进阶"
+          },
+          "types": {
+            "quiz": "选择题",
+            "short_answer": "简答题",
+            "number_answer": "数字答案",
+            "code": "编程题",
+            "form": "填空题"
+          },
+          "include_images": "需要时附上 AI 生成的参考图",
+          "generate": "生成题目",
+          "generating": "生成中",
+          "success": "AI 题目已生成。",
+          "error": "AI 出题失败。",
+          "manual_title": "手动创建"
+        },
         "toasts": {
           "task_created": "任务创建成功",
           "task_saved": "任务保存成功",

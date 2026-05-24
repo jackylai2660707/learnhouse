@@ -3575,6 +3575,32 @@
             "description": "Students enter a number graded with tolerance"
           }
         },
+        "ai_generator": {
+          "title": "AI question generator",
+          "subtitle": "Create auto-gradable homework tasks from a teacher brief.",
+          "prompt_placeholder": "Example: Generate Python loop practice for beginners. Include multiple choice, numeric answers, and one coding challenge with test cases.",
+          "prompt_required": "Describe what the homework should cover.",
+          "count": "Count",
+          "difficulty": "Difficulty",
+          "difficulties": {
+            "beginner": "Beginner",
+            "intermediate": "Intermediate",
+            "advanced": "Advanced"
+          },
+          "types": {
+            "quiz": "Quiz",
+            "short_answer": "Short answer",
+            "number_answer": "Number answer",
+            "code": "Code",
+            "form": "Fill blanks"
+          },
+          "include_images": "Attach AI-generated reference images when useful",
+          "generate": "Generate tasks",
+          "generating": "Generating",
+          "success": "AI questions generated.",
+          "error": "AI question generation failed.",
+          "manual_title": "Create manually"
+        },
         "toasts": {
           "task_created": "Task created successfully",
           "task_saved": "Task saved successfully",

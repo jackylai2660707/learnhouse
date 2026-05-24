@@ -110,6 +110,7 @@ def _install_stub_modules(monkeypatch: pytest.MonkeyPatch) -> None:
         "src.routers.ai.courseplanning", "src.routers.ai.courseplanning"
     )
     install_router_module("src.routers.ai.images", "src.routers.ai.images")
+    install_router_module("src.routers.ai.assignments", "src.routers.ai.assignments")
     install_router_module("src.routers.ai.rag", "src.routers.ai.rag")
     sys.modules["src.routers.ai"].ai = sys.modules["src.routers.ai.ai"]
     sys.modules["src.routers.ai"].magicblocks = sys.modules[
@@ -119,6 +120,9 @@ def _install_stub_modules(monkeypatch: pytest.MonkeyPatch) -> None:
         "src.routers.ai.courseplanning"
     ]
     sys.modules["src.routers.ai"].images = sys.modules["src.routers.ai.images"]
+    sys.modules["src.routers.ai"].assignments = sys.modules[
+        "src.routers.ai.assignments"
+    ]
     sys.modules["src.routers.ai"].rag = sys.modules["src.routers.ai.rag"]
 
     install_router_module("src.routers.boards.boards", "src.routers.boards.boards")
@@ -349,6 +353,13 @@ class TestRootRouter:
         assert ai_images["prefix"] == "/ai"
         assert ai_images["tags"] == ["ai", "images"]
         assert _dependency_names(ai_images) == ["get_authenticated_non_api_token_user"]
+
+        ai_assignments = next(
+            call for call in calls if call["router_name"] == "src.routers.ai.assignments"
+        )
+        assert ai_assignments["prefix"] == "/ai"
+        assert ai_assignments["tags"] == ["ai", "assignments"]
+        assert _dependency_names(ai_assignments) == ["get_authenticated_non_api_token_user"]
 
         custom_domains_public = next(
             call
