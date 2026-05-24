@@ -71,6 +71,23 @@ class SendCoursePlanningMessage(BaseModel):
     attachments: Optional[List[AttachmentData]] = None  # Context files/links
 
 
+class CoursePlanningIntakeRequest(BaseModel):
+    """Request to clarify course requirements before generating a plan"""
+    org_id: int
+    prompt: str
+    language: str = "en"
+    messages: List[CoursePlanningMessage] = []
+    attachments: Optional[List[AttachmentData]] = None
+
+
+class CoursePlanningIntakeResponse(BaseModel):
+    """AI clarification result before course plan generation"""
+    ready_to_generate: bool
+    assistant_message: str
+    questions: List[str] = []
+    generation_prompt: str = ""
+
+
 class FinalizeCoursePlanRequest(BaseModel):
     """Request to finalize the plan and create course structure"""
     session_uuid: str

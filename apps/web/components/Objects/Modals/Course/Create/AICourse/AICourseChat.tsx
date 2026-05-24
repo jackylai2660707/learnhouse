@@ -32,6 +32,11 @@ const ATTACHMENT_ONLY_PROMPT = [
   'Make the course practical, well sequenced, and ready for a teacher to review and publish.',
 ].join(' ')
 
+const isLikelyCoursePlanJson = (content: string) => {
+  const trimmed = content.trim()
+  return trimmed.startsWith('{') && trimmed.includes('"chapters"') && trimmed.includes('"learnings"')
+}
+
 function AICourseChat({
   messages,
   iterationCount,
@@ -214,6 +219,8 @@ function AICourseChat({
             >
               {message.role === 'user' ? (
                 <p className="whitespace-pre-wrap">{message.content}</p>
+              ) : !isLikelyCoursePlanJson(message.content) ? (
+                <p className="whitespace-pre-wrap text-white/70 text-sm leading-relaxed">{message.content}</p>
               ) : (
                 <div className="space-y-2">
                   <p className="text-xs text-white/50 font-medium">

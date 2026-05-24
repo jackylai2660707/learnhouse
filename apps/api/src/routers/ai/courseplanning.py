@@ -28,6 +28,7 @@ from src.services.ai.courseplanning import (
     get_course_planning_session,
     create_course_planning_session,
     save_course_planning_session,
+    clarify_course_requirements,
     generate_course_plan_stream,
     generate_activity_content_stream,
     MAX_PLANNING_ITERATIONS,
@@ -37,6 +38,8 @@ from src.services.ai.courseplanning import (
 from src.services.ai.schemas.courseplanning import (
     StartCoursePlanningSession,
     SendCoursePlanningMessage,
+    CoursePlanningIntakeRequest,
+    CoursePlanningIntakeResponse,
     FinalizeCoursePlanRequest,
     GenerateActivityContentRequest,
     SaveActivityContentRequest,
@@ -91,6 +94,48 @@ async def get_org_ai_model(org_id: int, db_session: AsyncSession) -> str:
 async def verify_user_org_membership(user_id: int, org_id: int, db_session: AsyncSession) -> bool:
     """Verify that the user is a member of the organization (superadmins bypass)."""
     return await is_org_member(user_id, org_id, db_session)
+
+
+@router.post(
+    "/courseplanning/intake",
+    response_model=CoursePlanningIntakeResponse,
+    summary="Clarify course requirements before generation",
+    description="Analyze the user's prompt and attachments, ask high-value clarification questions, and only mark the course ready for generation when enough detail is known.",
+    responses={
+        200: {"description": "Clarification result.", "model": CoursePlanningIntakeResponse},
+        401: {"description": "Authentication required"},
+        403: {"description": "User is not a member of this organization or insufficient credits"},
+        404: {"description": "Organization not found"},
+    },
+)
+async def clarify_course_planning_requirements(
+    request: Request,
+    intake_request: CoursePlanningIntakeRequest,
+    current_user: PublicUser | AnonymousUser | APITokenUser = Depends(get_current_user),
+    db_session: AsyncSession = Depends(get_db_session),
+) -> CoursePlanningIntakeResponse:
+    statement = select(Organization).where(Organization.id == intake_request.org_id)
+    org = (await db_session.execute(statement)).scalars().first()
+
+    if not org or org.id is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    if not await verify_user_org_membership(resolve_acting_user_id(current_user), org.id, db_session):
+        raise HTTPException(status_code=403, detail="User is not a member of this organization")
+
+    ai_model = await get_org_ai_model(org.id, db_session)
+    credit_cost = 3 if ai_model == "gemini-2.5-pro" else 1
+    from src.services.security.rate_limiting import enforce_ai_rate_limit
+    enforce_ai_rate_limit(resolve_acting_user_id(current_user), org.id)
+    await reserve_ai_credit(org.id, db_session, amount=credit_cost)
+
+    return await clarify_course_requirements(
+        prompt=intake_request.prompt,
+        messages=intake_request.messages,
+        language=intake_request.language,
+        gemini_model_name=ai_model,
+        attachments=intake_request.attachments,
+    )
 
 
 @router.post(

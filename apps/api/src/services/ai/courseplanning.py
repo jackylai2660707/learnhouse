@@ -14,6 +14,7 @@ from src.services.ai.schemas.courseplanning import (
     CoursePlanningSessionData,
     CoursePlanningMessage,
     AttachmentData,
+    CoursePlanningIntakeResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -424,6 +425,148 @@ REQUIREMENTS:
 - Prefer a complete lesson shape: title, learning objectives, explanation, examples, practice or reflection, summary, and a short quiz when appropriate.
 - Include at least one interactive element (blockQuiz, flipcard, or callout) when appropriate
 - Keep text concise but informative"""
+
+
+def build_course_intake_system_prompt(language: str = "en") -> str:
+    """Build the system prompt for pre-generation course requirement intake."""
+    language_name = get_language_name(language)
+    return f"""You are a rigorous course design interviewer. Your job is to reduce course rework by clarifying requirements before any course plan is generated.
+
+IMPORTANT: Speak to the user in {language_name}. Do not generate a course plan in this step.
+
+You should behave like a concise "grill me" interviewer:
+- Inspect the user's prompt and attached PDFs/images/documents/videos.
+- Identify missing decisions that would materially change the course.
+- Ask direct, high-leverage questions in a batch, not one at a time.
+- Prefer concrete multiple-choice style questions when useful.
+- Stop asking once you have enough information to create a strong first draft.
+
+Only ask about decisions that matter:
+- target learner and prerequisites
+- learner goal and success criteria
+- course depth, length, and pacing
+- preferred activity style
+- assessment style
+- tone/language/local context
+- constraints from uploaded source materials
+- for programming courses: required language/version, tooling, coding challenge style, tests, and expected student environment
+
+If the uploaded material is enough and the user's intent is clear, set ready_to_generate to true.
+If there are critical unknowns, set ready_to_generate to false and ask at most 6 questions.
+
+Return ONLY a valid JSON object:
+{{
+  "ready_to_generate": false,
+  "assistant_message": "Short message followed by the questions.",
+  "questions": [
+    "Question 1",
+    "Question 2"
+  ],
+  "generation_prompt": "A consolidated course creation brief to use only when ready_to_generate is true."
+}}
+
+When ready_to_generate is true:
+- questions must be []
+- generation_prompt must be a detailed consolidated brief that includes all known user answers, source material summary, inferred decisions, and any assumptions.
+- assistant_message should briefly say you have enough information and will generate the course.
+"""
+
+
+def extract_intake_from_response(response: str) -> CoursePlanningIntakeResponse:
+    """Extract and parse the intake JSON response, with a conservative fallback."""
+    try:
+        cleaned = response.strip()
+        if "```json" in cleaned:
+            start = cleaned.find("```json") + 7
+            end = cleaned.find("```", start)
+            if end != -1:
+                cleaned = cleaned[start:end].strip()
+        elif "```" in cleaned:
+            start = cleaned.find("```") + 3
+            end = cleaned.find("```", start)
+            if end != -1:
+                cleaned = cleaned[start:end].strip()
+
+        if not cleaned.startswith("{"):
+            start = cleaned.find("{")
+            if start != -1:
+                cleaned = cleaned[start:]
+        if not cleaned.endswith("}"):
+            end = cleaned.rfind("}")
+            if end != -1:
+                cleaned = cleaned[:end + 1]
+
+        return CoursePlanningIntakeResponse(**json.loads(cleaned))
+    except Exception:
+        logger.exception("Failed to parse course intake response")
+        return CoursePlanningIntakeResponse(
+            ready_to_generate=False,
+            assistant_message=(
+                "I need a little more information before creating the course:\n"
+                "1. Who is the target learner?\n"
+                "2. What should learners be able to do by the end?\n"
+                "3. How long or detailed should the course be?\n"
+                "4. Should it focus more on explanation, practice, quizzes, or projects?"
+            ),
+            questions=[
+                "Who is the target learner?",
+                "What should learners be able to do by the end?",
+                "How long or detailed should the course be?",
+                "Should it focus more on explanation, practice, quizzes, or projects?",
+            ],
+            generation_prompt="",
+        )
+
+
+async def clarify_course_requirements(
+    prompt: str,
+    messages: List[CoursePlanningMessage],
+    language: str = "en",
+    gemini_model_name: str = "gemini-2.0-flash",
+    attachments: Optional[List[AttachmentData]] = None,
+) -> CoursePlanningIntakeResponse:
+    """Ask clarification questions before creating the actual course plan."""
+    client = get_gemini_client()
+    attachment_context = build_attachment_context(attachments) if attachments else ""
+    attachment_parts = build_attachment_parts_dict(attachments) if attachments else []
+
+    contents = [
+        {"role": "user", "parts": [{"text": build_course_intake_system_prompt(language)}]},
+        {
+            "role": "model",
+            "parts": [{"text": "I will ask only necessary clarifying questions and return strict JSON."}],
+        },
+    ]
+
+    conversation = []
+    for message in messages[-12:]:
+        conversation.append(f"{message.role.upper()}: {message.content}")
+
+    intake_prompt = f"""Current user message:
+<user_content>{prompt.strip() or "[Uploaded reference materials only]"}</user_content>
+
+Conversation so far:
+<conversation>
+{chr(10).join(conversation) if conversation else "[No prior clarification conversation]"}
+</conversation>
+
+{attachment_context}
+
+Decide whether the course requirements are clear enough. If not, ask the most important remaining questions. If yes, produce the consolidated generation_prompt."""
+
+    contents.append({"role": "user", "parts": [{"text": intake_prompt}] + attachment_parts})
+
+    from google.genai.types import GenerateContentConfig
+
+    response = client.models.generate_content(
+        model=gemini_model_name,
+        contents=contents,
+        config=GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.35,
+        ),
+    )
+    return extract_intake_from_response(response.text or "")
 
 
 async def generate_course_plan_stream(

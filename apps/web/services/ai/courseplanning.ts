@@ -74,12 +74,23 @@ export interface FinalizeCoursePlanResponse {
   chapters: CreatedChapter[]
 }
 
+export interface CoursePlanningIntakeResponse {
+  ready_to_generate: boolean
+  assistant_message: string
+  questions: string[]
+  generation_prompt: string
+}
+
 interface StreamChunk {
   type: 'chunk' | 'done' | 'error'
   content?: string
   session_uuid?: string
   message?: string
 }
+
+const buildAttachmentKey = (attachment: Attachment) => (
+  `${attachment.type}:${attachment.name}:${attachment.url || ''}:${attachment.file?.name || ''}:${attachment.file?.size || 0}`
+)
 
 /**
  * Convert File to base64 string
@@ -123,6 +134,62 @@ async function prepareAttachments(attachments: Attachment[]): Promise<Attachment
   }
 
   return prepared
+}
+
+/**
+ * Clarify requirements before generating a course plan.
+ */
+export async function clarifyCoursePlanningRequirements(
+  orgId: number,
+  prompt: string,
+  messages: CoursePlanningMessage[],
+  accessToken: string,
+  language: string = 'en',
+  attachments?: Attachment[]
+): Promise<{ success: boolean; data?: CoursePlanningIntakeResponse; error?: string }> {
+  const uniqueAttachments = attachments
+    ? Array.from(new Map(attachments.map((attachment) => [buildAttachmentKey(attachment), attachment])).values())
+    : undefined
+  const attachmentData = uniqueAttachments && uniqueAttachments.length > 0
+    ? await prepareAttachments(uniqueAttachments)
+    : undefined
+
+  const data: Record<string, unknown> = {
+    org_id: orgId,
+    prompt,
+    language,
+    messages,
+  }
+
+  if (attachmentData && attachmentData.length > 0) {
+    data.attachments = attachmentData
+  }
+
+  try {
+    const response = await fetch(`${getAPIUrl()}ai/courseplanning/intake`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(data),
+    })
+
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({}))
+      return {
+        success: false,
+        error: errorData.detail || `HTTP error ${response.status}`,
+      }
+    }
+
+    return { success: true, data: await response.json() }
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error occurred',
+    }
+  }
 }
 
 /**

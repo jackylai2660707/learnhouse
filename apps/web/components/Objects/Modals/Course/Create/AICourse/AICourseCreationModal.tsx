@@ -13,6 +13,7 @@ import AICoursePreview from './AICoursePreview'
 import AICourseChat from './AICourseChat'
 import type { CoursePlan, CoursePlanningMessage, CreatedChapter, Attachment } from '@services/ai/courseplanning'
 import {
+  clarifyCoursePlanningRequirements,
   startCoursePlanningSession,
   iterateCoursePlanning,
   finalizeCoursePlan,
@@ -30,6 +31,10 @@ interface AICourseCreationModalProps {
 }
 
 const MAX_PLANNING_ITERATIONS = 10
+
+const attachmentKey = (attachment: Attachment) => (
+  `${attachment.type}:${attachment.name}:${attachment.url || ''}:${attachment.file?.name || ''}:${attachment.file?.size || 0}`
+)
 
 function AICourseCreationModal({
   isOpen,
@@ -55,6 +60,8 @@ function AICourseCreationModal({
   const [isAutoBuilding, setIsAutoBuilding] = React.useState(false)
   const [autoGenerateRunId, setAutoGenerateRunId] = React.useState(0)
   const [hasVideoAttachment, setHasVideoAttachment] = React.useState(false)
+  const [intakeMessages, setIntakeMessages] = React.useState<CoursePlanningMessage[]>([])
+  const [sourceAttachments, setSourceAttachments] = React.useState<Attachment[]>([])
 
   const isCourseCreated = courseUuid !== null
 
@@ -72,6 +79,8 @@ function AICourseCreationModal({
       setIsAutoBuilding(false)
       setAutoGenerateRunId(0)
       setHasVideoAttachment(false)
+      setIntakeMessages([])
+      setSourceAttachments([])
     }
   }, [isOpen])
 
@@ -128,18 +137,60 @@ function AICourseCreationModal({
     }
 
     try {
-      if (!sessionUuid) {
-        await startCoursePlanningSession(
-          orgId, message, accessToken,
-          onChunk, onComplete, onError,
-          i18n.language, attachments
+      if (!sessionUuid && !currentPlan) {
+        const nextAttachments = attachments && attachments.length > 0
+          ? Array.from(
+              new Map(
+                [...sourceAttachments, ...attachments].map((attachment) => [attachmentKey(attachment), attachment])
+              ).values()
+            )
+          : sourceAttachments
+        const nextIntakeMessages = [...intakeMessages, userMessage]
+
+        setSourceAttachments(nextAttachments)
+        setIntakeMessages(nextIntakeMessages)
+
+        const intake = await clarifyCoursePlanningRequirements(
+          orgId,
+          message,
+          nextIntakeMessages,
+          accessToken,
+          i18n.language,
+          nextAttachments
         )
-      } else {
+
+        if (!intake.success || !intake.data) {
+          onError(intake.error || 'Failed to clarify course requirements')
+          return
+        }
+
+        const assistantMessage: CoursePlanningMessage = {
+          role: 'model',
+          content: intake.data.assistant_message,
+        }
+        setMessages((prev) => [...prev, assistantMessage])
+        setIntakeMessages((prev) => [...prev, assistantMessage])
+
+        if (!intake.data.ready_to_generate) {
+          setIsLoading(false)
+          setHasVideoAttachment(false)
+          return
+        }
+
+        const generationPrompt = intake.data.generation_prompt || message
+        await startCoursePlanningSession(
+          orgId, generationPrompt, accessToken,
+          onChunk, onComplete, onError,
+          i18n.language, nextAttachments
+        )
+      } else if (sessionUuid) {
         await iterateCoursePlanning(
           sessionUuid, message, accessToken,
           onChunk, onComplete, onError,
           currentPlan, attachments
         )
+      } else {
+        onError('Course planning session is not ready yet')
       }
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Unknown error')
