@@ -28,7 +28,7 @@ from src.db.question_bank import (
 )
 from src.db.users import PublicUser
 from src.security.auth import resolve_acting_user_id
-from src.security.org_auth import is_org_admin, require_org_membership
+from src.security.org_auth import is_org_admin, require_org_role_permission
 from src.security.rbac import AccessAction, check_resource_access
 from src.services.courses.activities.assignments import create_assignment_task
 
@@ -66,6 +66,10 @@ async def _get_org_or_404(org_id: int, db_session: AsyncSession) -> Organization
     if not org:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found")
     return org
+
+
+async def _ensure_question_bank_access(user_id: int, org_id: int, db_session: AsyncSession) -> None:
+    await require_org_role_permission(user_id, org_id, db_session, "dashboard", "action_access")
 
 
 async def _ensure_category_access(
@@ -195,7 +199,7 @@ async def list_question_bank_categories(
     db_session: AsyncSession,
 ) -> list[QuestionBankCategoryRead]:
     await _get_org_or_404(org_id, db_session)
-    await require_org_membership(resolve_acting_user_id(current_user), org_id, db_session)
+    await _ensure_question_bank_access(resolve_acting_user_id(current_user), org_id, db_session)
     categories = (
         await db_session.execute(
             select(QuestionBankCategory)
@@ -213,7 +217,7 @@ async def create_question_bank_category(
 ) -> QuestionBankCategoryRead:
     await _get_org_or_404(category_object.org_id, db_session)
     acting_user_id = resolve_acting_user_id(current_user)
-    await require_org_membership(acting_user_id, category_object.org_id, db_session)
+    await _ensure_question_bank_access(acting_user_id, category_object.org_id, db_session)
     await _ensure_category_access(category_object.parent_category_id, category_object.org_id, db_session)
 
     category = QuestionBankCategory(**category_object.model_dump())
@@ -242,7 +246,7 @@ async def update_question_bank_category(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question bank category not found")
 
     acting_user_id = resolve_acting_user_id(current_user)
-    await require_org_membership(acting_user_id, category.org_id, db_session)
+    await _ensure_question_bank_access(acting_user_id, category.org_id, db_session)
     if category.created_by_user_id != acting_user_id and not await is_org_admin(acting_user_id, category.org_id, db_session):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only edit your own categories")
 
@@ -271,6 +275,7 @@ async def delete_question_bank_category(
     if not category:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question bank category not found")
     acting_user_id = resolve_acting_user_id(current_user)
+    await _ensure_question_bank_access(acting_user_id, category.org_id, db_session)
     if category.created_by_user_id != acting_user_id and not await is_org_admin(acting_user_id, category.org_id, db_session):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only delete your own categories")
 
@@ -292,7 +297,7 @@ async def list_question_bank_items(
 ) -> list[QuestionBankItemRead]:
     await _get_org_or_404(org_id, db_session)
     acting_user_id = resolve_acting_user_id(current_user)
-    await require_org_membership(acting_user_id, org_id, db_session)
+    await _ensure_question_bank_access(acting_user_id, org_id, db_session)
 
     statement = select(QuestionBankItem).where(
         QuestionBankItem.org_id == org_id,
@@ -329,7 +334,7 @@ async def create_question_bank_item(
 ) -> QuestionBankItemRead:
     await _get_org_or_404(item_object.org_id, db_session)
     acting_user_id = resolve_acting_user_id(current_user)
-    await require_org_membership(acting_user_id, item_object.org_id, db_session)
+    await _ensure_question_bank_access(acting_user_id, item_object.org_id, db_session)
     await _ensure_category_access(item_object.category_id, item_object.org_id, db_session)
     _ensure_auto_gradable_type(item_object.assignment_type)
 
@@ -358,7 +363,7 @@ async def update_question_bank_item(
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question bank item not found")
     acting_user_id = resolve_acting_user_id(current_user)
-    await require_org_membership(acting_user_id, item.org_id, db_session)
+    await _ensure_question_bank_access(acting_user_id, item.org_id, db_session)
     await _ensure_can_modify_item(item, acting_user_id, db_session)
 
     update_data = item_object.model_dump(exclude_unset=True)
@@ -389,6 +394,7 @@ async def delete_question_bank_item(
     if not item:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question bank item not found")
     acting_user_id = resolve_acting_user_id(current_user)
+    await _ensure_question_bank_access(acting_user_id, item.org_id, db_session)
     await _ensure_can_modify_item(item, acting_user_id, db_session)
     await db_session.delete(item)
     await db_session.commit()
@@ -417,6 +423,7 @@ async def save_assignment_task_to_question_bank(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Parent assignment or course not found")
 
     acting_user_id = resolve_acting_user_id(current_user)
+    await _ensure_question_bank_access(acting_user_id, task.org_id, db_session)
     await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.UPDATE)
     await _ensure_category_access(save_request.category_id, task.org_id, db_session)
     _ensure_auto_gradable_type(task.assignment_type)
@@ -460,7 +467,7 @@ async def add_question_bank_item_to_assignment(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Question bank item not found")
 
     acting_user_id = resolve_acting_user_id(current_user)
-    await require_org_membership(acting_user_id, item.org_id, db_session)
+    await _ensure_question_bank_access(acting_user_id, item.org_id, db_session)
     if item.visibility == QuestionBankVisibilityEnum.PRIVATE and item.created_by_user_id != acting_user_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="This question is private")
     _ensure_auto_gradable_type(item.assignment_type)
