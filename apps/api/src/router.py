@@ -12,6 +12,7 @@ from src.routers import monitoring
 from src.routers import stream
 from src.routers import api_tokens
 from src.routers import webhooks
+from src.routers import question_bank
 from src.routers.integrations import zapier as zapier_integration
 from src.routers.ai import ai, magicblocks, courseplanning, rag
 from src.routers.ai import images as ai_images
@@ -167,6 +168,12 @@ v1_router.include_router(
     assignments.router,
     prefix="/assignments",
     tags=["assignments"],
+    dependencies=[Depends(require_authenticated_user)]
+)
+v1_router.include_router(
+    question_bank.router,
+    prefix="/question-bank",
+    tags=["question-bank"],
     dependencies=[Depends(require_authenticated_user)]
 )
 v1_router.include_router(chapters.router, prefix="/chapters", tags=["chapters"])

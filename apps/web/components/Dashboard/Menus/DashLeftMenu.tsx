@@ -397,6 +397,13 @@ function DashLeftMenu() {
               })()}
             </HoverMenu>
             </div>
+            <MenuLink
+              href="/dash/question-bank"
+              icon={<Question size={20} weight="fill" />}
+              label="Question bank"
+              isCollapsed={isCollapsed}
+              active={isActivePath('/dash/question-bank')}
+            />
             {showCommunities && (
               <MenuLink
                 href="/dash/communities"

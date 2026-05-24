@@ -3,6 +3,7 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from src.db.courses.assignments import AssignmentTaskRead, AssignmentTaskTypeEnum
+from src.db.question_bank import QuestionBankItemRead, QuestionBankVisibilityEnum
 
 
 AutoGradableAssignmentType = Literal[
@@ -24,6 +25,10 @@ class GenerateAssignmentTasksRequest(BaseModel):
         default_factory=lambda: ["QUIZ", "SHORT_ANSWER", "NUMBER_ANSWER", "CODE"]
     )
     include_images: bool = False
+    save_to_question_bank: bool = False
+    question_bank_category_id: Optional[int] = None
+    question_bank_visibility: QuestionBankVisibilityEnum = QuestionBankVisibilityEnum.ORG
+    question_bank_tags: List[str] = []
 
 
 class GeneratedAssignmentTaskDraft(BaseModel):
@@ -37,5 +42,5 @@ class GeneratedAssignmentTaskDraft(BaseModel):
 
 class GenerateAssignmentTasksResponse(BaseModel):
     tasks: List[AssignmentTaskRead]
+    question_bank_items: List[QuestionBankItemRead] = []
     warnings: List[str] = []
-

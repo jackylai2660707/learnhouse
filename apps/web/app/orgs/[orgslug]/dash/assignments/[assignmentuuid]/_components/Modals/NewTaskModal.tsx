@@ -1,6 +1,8 @@
 import { useAssignmentsTaskDispatch } from '@components/Contexts/Assignments/AssignmentsTaskContext';
 import { useLHSession } from '@components/Contexts/LHSessionContext';
+import { useOrg } from '@components/Contexts/OrgContext';
 import { createAssignmentTask, generateAssignmentTasks } from '@services/courses/assignments'
+import { addQuestionBankItemToAssignment, getQuestionBankItems } from '@services/question-bank/question-bank'
 import {
   Code,
   FileArrowUp,
@@ -12,7 +14,7 @@ import {
 import { Loader2, Sparkles } from 'lucide-react'
 import React from 'react'
 import toast from 'react-hot-toast';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/query/keys';
 import { useTranslation } from 'react-i18next';
 
@@ -105,6 +107,7 @@ function NewTaskModal({ closeModal, assignment_uuid }: any) {
   const { t } = useTranslation()
   const session = useLHSession() as any;
   const access_token = session?.data?.tokens?.access_token;
+  const org = useOrg() as any
   const assignmentTaskStateHook = useAssignmentsTaskDispatch() as any
   const queryClient = useQueryClient()
   const [aiPrompt, setAiPrompt] = React.useState('')
@@ -112,9 +115,19 @@ function NewTaskModal({ closeModal, assignment_uuid }: any) {
   const [aiDifficulty, setAiDifficulty] = React.useState('intermediate')
   const [aiTaskTypes, setAiTaskTypes] = React.useState<string[]>(['QUIZ', 'SHORT_ANSWER', 'NUMBER_ANSWER', 'CODE'])
   const [includeImages, setIncludeImages] = React.useState(false)
+  const [saveToQuestionBank, setSaveToQuestionBank] = React.useState(true)
+  const [questionBankTags, setQuestionBankTags] = React.useState('')
+  const [bankSearch, setBankSearch] = React.useState('')
+  const [isAddingBankItem, setIsAddingBankItem] = React.useState<string | null>(null)
   const [isGenerating, setIsGenerating] = React.useState(false)
 
   const tr = (key: string, fallback: string) => t(key, { defaultValue: fallback })
+  const bankItemsQuery = useQuery({
+    queryKey: ['question-bank-items', org?.id, bankSearch],
+    queryFn: async () => (await getQuestionBankItems({ org_id: org.id, q: bankSearch }, access_token)).data,
+    enabled: !!org?.id && !!access_token,
+    staleTime: 30_000,
+  })
 
   function showReminderToast() {
     // Check if the reminder has already been shown using sessionStorage
@@ -172,6 +185,8 @@ function NewTaskModal({ closeModal, assignment_uuid }: any) {
           difficulty: aiDifficulty,
           question_types: aiTaskTypes,
           include_images: includeImages,
+          save_to_question_bank: saveToQuestionBank,
+          question_bank_tags: questionBankTags.split(',').map((tag) => tag.trim()).filter(Boolean),
           language: 'zh',
         },
         access_token
@@ -197,6 +212,22 @@ function NewTaskModal({ closeModal, assignment_uuid }: any) {
     queryClient.invalidateQueries({ queryKey: queryKeys.assignments.tasks(assignment_uuid) })
     if (tasks[0]?.assignment_task_uuid) {
       assignmentTaskStateHook({ type: 'setSelectedAssignmentTaskUUID', payload: tasks[0].assignment_task_uuid })
+    }
+    closeModal(false)
+  }
+
+  async function addBankItemToAssignment(item: any) {
+    setIsAddingBankItem(item.item_uuid)
+    const res = await addQuestionBankItemToAssignment(item.item_uuid, assignment_uuid, access_token)
+    setIsAddingBankItem(null)
+    if (res.success === false) {
+      toast.error(res?.data?.detail || 'Failed to add question')
+      return
+    }
+    toast.success('Question added from bank')
+    queryClient.invalidateQueries({ queryKey: queryKeys.assignments.tasks(assignment_uuid) })
+    if (res?.data?.task?.assignment_task_uuid) {
+      assignmentTaskStateHook({ type: 'setSelectedAssignmentTaskUUID', payload: res.data.task.assignment_task_uuid })
     }
     closeModal(false)
   }
@@ -289,6 +320,27 @@ function NewTaskModal({ closeModal, assignment_uuid }: any) {
               </span>
             </label>
 
+            <label className="flex items-start gap-2 rounded-lg border border-gray-200 px-3 py-2">
+              <input
+                type="checkbox"
+                checked={saveToQuestionBank}
+                onChange={(e) => setSaveToQuestionBank(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span className="text-xs text-gray-600">
+                {tr('dashboard.assignments.editor.ai_generator.save_to_bank', 'Save generated questions to the question bank')}
+              </span>
+            </label>
+
+            {saveToQuestionBank && (
+              <input
+                value={questionBankTags}
+                onChange={(e) => setQuestionBankTags(e.target.value)}
+                placeholder={tr('dashboard.assignments.editor.ai_generator.tags_placeholder', 'Tags, comma separated')}
+                className="h-9 w-full rounded-lg border border-gray-200 px-2 text-xs outline-none focus:border-gray-900"
+              />
+            )}
+
             <button
               type="button"
               onClick={generateWithAI}
@@ -303,6 +355,52 @@ function NewTaskModal({ closeModal, assignment_uuid }: any) {
               </span>
             </button>
           </div>
+        </div>
+      </div>
+
+      <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+        <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100 bg-gray-50">
+          <div>
+            <p className="text-sm font-bold text-gray-900">
+              {tr('dashboard.assignments.editor.question_bank.title', 'Question bank')}
+            </p>
+            <p className="text-xs text-gray-500">
+              {tr('dashboard.assignments.editor.question_bank.subtitle', 'Reuse shared teacher questions in this assignment.')}
+            </p>
+          </div>
+          <input
+            value={bankSearch}
+            onChange={(e) => setBankSearch(e.target.value)}
+            placeholder={tr('dashboard.assignments.editor.question_bank.search', 'Search bank')}
+            className="h-9 w-52 rounded-lg border border-gray-200 px-3 text-xs outline-none focus:border-gray-900"
+          />
+        </div>
+        <div className="max-h-56 overflow-y-auto p-3">
+          {(bankItemsQuery.data || []).length === 0 ? (
+            <p className="px-2 py-4 text-center text-xs font-medium text-gray-400">
+              {tr('dashboard.assignments.editor.question_bank.empty', 'No saved questions yet.')}
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+              {(bankItemsQuery.data || []).slice(0, 8).map((item: any) => (
+                <button
+                  key={item.item_uuid}
+                  type="button"
+                  onClick={() => addBankItemToAssignment(item)}
+                  disabled={isAddingBankItem === item.item_uuid}
+                  className="rounded-lg border border-gray-200 p-3 text-left hover:border-gray-900 disabled:opacity-50"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="truncate text-xs font-black text-gray-900">{item.title}</p>
+                    <span className="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-bold text-gray-500">
+                      {item.assignment_type}
+                    </span>
+                  </div>
+                  <p className="mt-1 line-clamp-2 text-[11px] text-gray-500">{item.description || item.contents?.prompt}</p>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

@@ -3216,6 +3216,11 @@
         }
       }
     },
+    "question_bank": {
+      "title": "题库",
+      "subtitle": "给老师复用、共享、分类沉淀的作业题。",
+      "keywords": "题库 题目 作业 共享 复用 分类"
+    },
     "assignments": {
       "home": {
         "title": "作业",
@@ -3334,11 +3339,19 @@
             "form": "填空题"
           },
           "include_images": "需要时附上 AI 生成的参考图",
+          "save_to_bank": "把生成的题目保存到题库",
+          "tags_placeholder": "标签，用逗号分隔",
           "generate": "生成题目",
           "generating": "生成中",
           "success": "AI 题目已生成。",
           "error": "AI 出题失败。",
           "manual_title": "手动创建"
+        },
+        "question_bank": {
+          "title": "题库",
+          "subtitle": "从老师共享题库复用题目到当前作业。",
+          "search": "搜索题库",
+          "empty": "暂无已保存题目。"
         },
         "toasts": {
           "task_created": "任务创建成功",

@@ -3,7 +3,8 @@ import { useAssignments } from '@components/Contexts/Assignments/AssignmentConte
 import { useAssignmentsTask, useAssignmentsTaskDispatch } from '@components/Contexts/Assignments/AssignmentsTaskContext';
 import { useLHSession } from '@components/Contexts/LHSessionContext';
 import { deleteAssignmentTask } from '@services/courses/assignments';
-import { GalleryVerticalEnd, Info, TentTree, Trash } from 'lucide-react'
+import { saveAssignmentTaskToQuestionBank } from '@services/question-bank/question-bank';
+import { BookOpenCheck, GalleryVerticalEnd, Info, TentTree, Trash } from 'lucide-react'
 import React, { useEffect } from 'react'
 import toast from 'react-hot-toast';
 import { useQueryClient } from '@tanstack/react-query';
@@ -39,6 +40,22 @@ function AssignmentTaskEditor({ page }: any) {
         }
     }
 
+    async function saveToQuestionBankUI() {
+        const taskUuid = assignmentTaskState?.assignmentTask?.assignment_task_uuid
+        if (!taskUuid) return
+        const res = await saveAssignmentTaskToQuestionBank({
+            assignment_task_uuid: taskUuid,
+            tags: [],
+            difficulty: 'intermediate',
+            visibility: 'ORG',
+        }, access_token)
+        if (res.success === false) {
+            toast.error(res?.data?.detail || 'Could not save to question bank')
+            return
+        }
+        toast.success('Saved to question bank')
+    }
+
     useEffect(() => {
         // Switch back to general page if the selectedAssignmentTaskUUID is changed 
         if (assignmentTaskState.selectedAssignmentTaskUUID !== assignmentTaskState.assignmentTask.assignment_task_uuid) {
@@ -60,7 +77,14 @@ function AssignmentTaskEditor({ page }: any) {
                             <div className='font-semibold text-lg '>
                                 {assignmentTaskState?.assignmentTask.title}
                             </div>
-                            <div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={saveToQuestionBankUI}
+                                    className='flex px-2 py-1.5 cursor-pointer rounded-md space-x-2 items-center bg-gray-900 text-white shadow-lg'>
+                                    <BookOpenCheck size={18} />
+                                    <p className='text-xs font-semibold'>Save to bank</p>
+                                </button>
                                 <div
                                     onClick={() => deleteTaskUI()}
                                     className='flex px-2 py-1.5 cursor-pointer rounded-md space-x-2 items-center bg-linear-to-bl text-red-800  bg-rose-100  border border-rose-600/10 shadow-rose-900/10 shadow-lg'>

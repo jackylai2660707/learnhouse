@@ -92,6 +92,7 @@ def _install_stub_modules(monkeypatch: pytest.MonkeyPatch) -> None:
         "stream",
         "api_tokens",
         "webhooks",
+        "question_bank",
     ]:
         install_router_module(f"src.routers.{name}", f"src.routers.{name}")
 
@@ -346,6 +347,13 @@ class TestRootRouter:
         assert coding_challenges["prefix"] == "/coding-challenges"
         assert coding_challenges["tags"] == ["coding-challenges"]
         assert _dependency_names(coding_challenges) == ["get_authenticated_non_api_token_user"]
+
+        question_bank = next(
+            call for call in calls if call["router_name"] == "src.routers.question_bank"
+        )
+        assert question_bank["prefix"] == "/question-bank"
+        assert question_bank["tags"] == ["question-bank"]
+        assert _dependency_names(question_bank) == ["get_authenticated_non_api_token_user"]
 
         ai_images = next(
             call for call in calls if call["router_name"] == "src.routers.ai.images"

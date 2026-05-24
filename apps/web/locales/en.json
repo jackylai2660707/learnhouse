@@ -3477,6 +3477,11 @@
         }
       }
     },
+    "question_bank": {
+      "title": "Question bank",
+      "subtitle": "Reusable, shared, classified homework questions for teachers.",
+      "keywords": "question bank questions homework reusable shared"
+    },
     "assignments": {
       "home": {
         "title": "Assignments",
@@ -3595,11 +3600,19 @@
             "form": "Fill blanks"
           },
           "include_images": "Attach AI-generated reference images when useful",
+          "save_to_bank": "Save generated questions to the question bank",
+          "tags_placeholder": "Tags, comma separated",
           "generate": "Generate tasks",
           "generating": "Generating",
           "success": "AI questions generated.",
           "error": "AI question generation failed.",
           "manual_title": "Create manually"
+        },
+        "question_bank": {
+          "title": "Question bank",
+          "subtitle": "Reuse shared teacher questions in this assignment.",
+          "search": "Search bank",
+          "empty": "No saved questions yet."
         },
         "toasts": {
           "task_created": "Task created successfully",

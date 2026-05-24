@@ -30,6 +30,8 @@ from src.services.ai.schemas.assignments import (
     GenerateAssignmentTasksResponse,
 )
 from src.services.courses.activities.assignments import create_assignment_task
+from src.services.question_bank import create_question_bank_item
+from src.db.question_bank import QuestionBankItemCreate, QuestionBankItemRead
 from src.services.security.rate_limiting import enforce_ai_rate_limit
 from src.services.utils.upload_content import upload_content
 
@@ -470,6 +472,7 @@ async def generate_assignment_tasks(
         raise HTTPException(status_code=502, detail="AI did not return any valid auto-gradable tasks")
 
     created_tasks: list[AssignmentTaskRead] = []
+    question_bank_items: list[QuestionBankItemRead] = []
     for draft in drafts:
         task = await create_assignment_task(
             request,
@@ -500,5 +503,34 @@ async def generate_assignment_tasks(
                 logger.exception("Failed to attach AI generated reference image")
                 warnings.append(f"Image was not attached to {draft.title}: {str(exc)}")
         created_tasks.append(task)
+        if request_body.save_to_question_bank:
+            try:
+                question_bank_items.append(
+                    await create_question_bank_item(
+                        QuestionBankItemCreate(
+                            title=task.title,
+                            description=task.description,
+                            hint=task.hint,
+                            reference_file=task.reference_file,
+                            assignment_type=task.assignment_type,
+                            contents=task.contents,
+                            tags=request_body.question_bank_tags,
+                            difficulty=request_body.difficulty,
+                            visibility=request_body.question_bank_visibility,
+                            category_id=request_body.question_bank_category_id,
+                            org_id=course.org_id,
+                            source_assignment_task_uuid=task.assignment_task_uuid,
+                        ),
+                        current_user,
+                        db_session,
+                    )
+                )
+            except Exception as exc:
+                logger.exception("Failed to save generated task to question bank")
+                warnings.append(f"Task was created but not saved to question bank: {str(exc)}")
 
-    return GenerateAssignmentTasksResponse(tasks=created_tasks, warnings=warnings)
+    return GenerateAssignmentTasksResponse(
+        tasks=created_tasks,
+        question_bank_items=question_bank_items,
+        warnings=warnings,
+    )
