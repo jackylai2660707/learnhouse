@@ -48,6 +48,47 @@ def _bank_item(org_id: int, title: str, visibility: QuestionBankVisibilityEnum =
     )
 
 
+def _code_bank_item(org_id: int, title: str):
+    return QuestionBankItemCreate(
+        title=title,
+        description="Complete a Python output task.",
+        hint="Use print",
+        assignment_type=AssignmentTaskTypeEnum.CODE,
+        contents={
+            "language_id": 71,
+            "starter_code": "# Write your code here\n",
+            "solution_code": "print('secret')\n",
+            "solutionCode": "print('secret')\n",
+            "show_solution_after_submit": True,
+            "test_cases": [
+                {
+                    "id": "tc_visible",
+                    "label": "Visible",
+                    "stdin": "",
+                    "expectedStdout": "secret",
+                    "expected_stdout": "secret",
+                }
+            ],
+            "hidden_test_cases": [
+                {
+                    "id": "tc_hidden",
+                    "label": "Hidden",
+                    "stdin": "",
+                    "expectedStdout": "secret",
+                    "expected_stdout": "secret",
+                }
+            ],
+        },
+        tags=["python", "self-test", "code"],
+        difficulty="beginner",
+        visibility=QuestionBankVisibilityEnum.ORG,
+        category_id=None,
+        org_id=org_id,
+        source_assignment_task_uuid=None,
+        reference_file=None,
+    )
+
+
 async def test_student_starts_self_test_from_shared_question_bank_without_answer_leak(db, org, admin_user, regular_user):
     await create_question_bank_item(_bank_item(org.id, "Shared self-test item"), admin_user, db)
     await create_question_bank_item(_bank_item(org.id, "Private teacher item", QuestionBankVisibilityEnum.PRIVATE), admin_user, db)
@@ -63,6 +104,30 @@ async def test_student_starts_self_test_from_shared_question_bank_without_answer
     assert len(attempt.questions) == 1
     assert "correct_answers" not in attempt.questions[0].contents
     assert attempt.questions[0].answer == {}
+
+
+async def test_student_starts_code_self_test_without_solution_or_expected_output_leak(db, org, admin_user, regular_user):
+    await create_question_bank_item(_code_bank_item(org.id, "Shared code self-test item"), admin_user, db)
+
+    attempt = await start_self_test(
+        StartSelfTestRequest(
+            org_id=org.id,
+            question_count=1,
+            tags=["code"],
+            assignment_types=[AssignmentTaskTypeEnum.CODE],
+        ),
+        regular_user,
+        db,
+    )
+
+    contents = attempt.questions[0].contents
+    assert "solution_code" not in contents
+    assert "solutionCode" not in contents
+    assert "show_solution_after_submit" not in contents
+    assert "expectedStdout" not in contents["test_cases"][0]
+    assert "expected_stdout" not in contents["test_cases"][0]
+    assert "expectedStdout" not in contents["hidden_test_cases"][0]
+    assert "expected_stdout" not in contents["hidden_test_cases"][0]
 
 
 async def test_student_submits_self_test_and_record_is_visible_to_teacher(db, org, admin_user, regular_user):

@@ -71,6 +71,10 @@ def _sanitize_contents(assignment_type: AssignmentTaskTypeEnum, contents: dict, 
             questions.append(clean_question)
         data["questions"] = questions
     elif assignment_type == AssignmentTaskTypeEnum.CODE:
+        data.pop("solution_code", None)
+        data.pop("solutionCode", None)
+        data.pop("show_solution_after_submit", None)
+        data.pop("showSolutionAfterSubmit", None)
         clean_cases = []
         for case in data.get("test_cases") or []:
             clean_case = dict(case or {})
@@ -78,6 +82,16 @@ def _sanitize_contents(assignment_type: AssignmentTaskTypeEnum, contents: dict, 
             clean_case.pop("expected_stdout", None)
             clean_cases.append(clean_case)
         data["test_cases"] = clean_cases
+        clean_hidden_cases = []
+        for case in data.get("hidden_test_cases") or data.get("hiddenTestCases") or []:
+            clean_case = dict(case or {})
+            clean_case.pop("expectedStdout", None)
+            clean_case.pop("expected_stdout", None)
+            clean_hidden_cases.append(clean_case)
+        if "hidden_test_cases" in data:
+            data["hidden_test_cases"] = clean_hidden_cases
+        if "hiddenTestCases" in data:
+            data["hiddenTestCases"] = clean_hidden_cases
     return data
 
 
