@@ -79,6 +79,18 @@ export async function createAssignmentTask(
   return res
 }
 
+export async function getAssignmentTasks(
+  assignmentUUID: string,
+  access_token: string
+) {
+  const result: any = await fetch(
+    `${getAPIUrl()}assignments/${assignmentUUID}/tasks`,
+    RequestBodyWithAuthHeader('GET', null, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
 export async function generateAssignmentTasks(
   body: any,
   access_token: string
@@ -86,6 +98,30 @@ export async function generateAssignmentTasks(
   const result: any = await fetch(
     `${getAPIUrl()}ai/assignments/generate-tasks`,
     RequestBodyWithAuthHeader('POST', body, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
+export async function getAssignmentAiStatus(access_token: string) {
+  const result: any = await fetch(
+    `${getAPIUrl()}ai/assignments/status`,
+    RequestBodyWithAuthHeader('GET', null, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
+export async function getMyAssignmentQueue(
+  orgId: number,
+  access_token: string,
+  limit = 5
+) {
+  const params = new URLSearchParams()
+  params.set('limit', String(limit))
+  const result: any = await fetch(
+    `${getAPIUrl()}assignments/org/${orgId}/my-queue?${params.toString()}`,
+    RequestBodyWithAuthHeader('GET', null, null, access_token)
   )
   const res = await getResponseMetadata(result)
   return res
@@ -297,6 +333,43 @@ export async function retryAssignmentSubmission(
   return res
 }
 
+export async function getMyAssignmentRemediation(
+  assignmentUUID: string,
+  access_token: string
+) {
+  const result: any = await fetch(
+    `${getAPIUrl()}assignments/${assignmentUUID}/remediation/my`,
+    RequestBodyWithAuthHeader('GET', null, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
+export async function createMyAssignmentRemediation(
+  assignmentUUID: string,
+  access_token: string
+) {
+  const result: any = await fetch(
+    `${getAPIUrl()}assignments/${assignmentUUID}/remediation/my`,
+    RequestBodyWithAuthHeader('POST', null, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
+export async function submitMyAssignmentRemediation(
+  assignmentUUID: string,
+  answers: any[],
+  access_token: string
+) {
+  const result: any = await fetch(
+    `${getAPIUrl()}assignments/${assignmentUUID}/remediation/my/submit`,
+    RequestBodyWithAuthHeader('POST', { answers }, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
 export async function markActivityAsDoneForUser(
   user_id: string,
   assignmentUUID: string,
@@ -320,4 +393,158 @@ export async function getAssignmentsFromACourse(
   )
   const res = await getResponseMetadata(result)
   return res
+}
+
+type GradebookFilters = {
+  course_id?: number | string | null
+  usergroup_id?: number | string | null
+  include_self_tests?: boolean
+}
+
+export type SchoolOperationsFilters = {
+  start_date?: string | null
+  end_date?: string | null
+  course_id?: number | string | null
+  usergroup_id?: number | string | null
+  subject?: string | null
+  education_stage?: string | null
+  grade_level?: string | null
+  school_year?: string | null
+  term?: string | null
+  include_self_tests?: boolean
+}
+
+function schoolOperationsQuery(filters?: SchoolOperationsFilters) {
+  const params = new URLSearchParams()
+  const scalarKeys: Array<keyof Omit<SchoolOperationsFilters, 'include_self_tests'>> = [
+    'start_date',
+    'end_date',
+    'course_id',
+    'usergroup_id',
+    'subject',
+    'education_stage',
+    'grade_level',
+    'school_year',
+    'term',
+  ]
+  scalarKeys.forEach((key) => {
+    const value = filters?.[key]
+    if (value !== null && value !== undefined && String(value).trim()) {
+      params.set(key, String(value).trim())
+    }
+  })
+  if (filters?.include_self_tests === false) params.set('include_self_tests', 'false')
+  const query = params.toString()
+  return query ? `?${query}` : ''
+}
+
+function gradebookQuery(filters?: GradebookFilters) {
+  const params = new URLSearchParams()
+  if (filters?.course_id) params.set('course_id', String(filters.course_id))
+  if (filters?.usergroup_id) params.set('usergroup_id', String(filters.usergroup_id))
+  if (filters?.include_self_tests) params.set('include_self_tests', 'true')
+  const query = params.toString()
+  return query ? `?${query}` : ''
+}
+
+export async function getTeacherAssignmentWorkbench(
+  orgId: number | string,
+  access_token: string
+) {
+  const result: any = await fetch(
+    `${getAPIUrl()}assignments/org/${orgId}/workbench`,
+    RequestBodyWithAuthHeader('GET', null, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
+export async function getSchoolOperationsSummary(
+  orgId: number | string,
+  access_token: string,
+  filters?: SchoolOperationsFilters
+) {
+  const result: any = await fetch(
+    `${getAPIUrl()}assignments/org/${orgId}/operations-summary${schoolOperationsQuery(filters)}`,
+    RequestBodyWithAuthHeader('GET', null, null, access_token)
+  )
+  return getResponseMetadata(result)
+}
+
+export async function downloadSchoolOperationsSummaryCsv(
+  orgId: number | string,
+  access_token: string,
+  filters?: SchoolOperationsFilters
+) {
+  const result: any = await fetch(
+    `${getAPIUrl()}assignments/org/${orgId}/operations-summary.csv${schoolOperationsQuery(filters)}`,
+    RequestBodyWithAuthHeader('GET', null, null, access_token)
+  )
+  if (!result.ok) {
+    const data = await result.json().catch(() => ({ detail: result.statusText }))
+    return {
+      success: false,
+      data,
+      status: result.status,
+      HTTPmessage: result.statusText,
+    }
+  }
+  return {
+    success: true,
+    data: await result.blob(),
+    status: result.status,
+    HTTPmessage: result.statusText,
+  }
+}
+
+export async function getAssignmentGradebook(
+  orgId: number | string,
+  access_token: string,
+  filters?: GradebookFilters
+) {
+  const result: any = await fetch(
+    `${getAPIUrl()}assignments/org/${orgId}/gradebook${gradebookQuery(filters)}`,
+    RequestBodyWithAuthHeader('GET', null, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
+export async function getAssignmentGradebookSummary(
+  orgId: number | string,
+  access_token: string,
+  filters?: GradebookFilters
+) {
+  const result: any = await fetch(
+    `${getAPIUrl()}assignments/org/${orgId}/gradebook/summary${gradebookQuery(filters)}`,
+    RequestBodyWithAuthHeader('GET', null, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
+export async function downloadAssignmentGradebookCsv(
+  orgId: number | string,
+  access_token: string,
+  filters?: GradebookFilters
+) {
+  const result: any = await fetch(
+    `${getAPIUrl()}assignments/org/${orgId}/gradebook.csv${gradebookQuery(filters)}`,
+    RequestBodyWithAuthHeader('GET', null, null, access_token)
+  )
+  if (!result.ok) {
+    const data = await result.json().catch(() => ({ detail: result.statusText }))
+    return {
+      success: false,
+      data,
+      status: result.status,
+      HTTPmessage: result.statusText,
+    }
+  }
+  return {
+    success: true,
+    data: await result.blob(),
+    status: result.status,
+    HTTPmessage: result.statusText,
+  }
 }

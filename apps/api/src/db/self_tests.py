@@ -1,10 +1,14 @@
 from enum import Enum
 from typing import Dict, List, Optional
 
+from pydantic import field_validator
 from sqlalchemy import JSON, Column, ForeignKey, Index
 from sqlmodel import Field, SQLModel
 
 from src.db.courses.assignments import AssignmentTaskTypeEnum
+
+SIMPLE_SELF_TEST_DEFAULT_QUESTION_COUNT = 3
+SIMPLE_SELF_TEST_MAX_QUESTION_COUNT = 5
 
 
 class SelfTestAttemptStatus(str, Enum):
@@ -15,10 +19,41 @@ class SelfTestAttemptStatus(str, Enum):
 
 class StartSelfTestRequest(SQLModel):
     org_id: int
-    question_count: int = 5
+    question_count: int = Field(default=SIMPLE_SELF_TEST_DEFAULT_QUESTION_COUNT, ge=1, le=SIMPLE_SELF_TEST_MAX_QUESTION_COUNT)
     category_id: Optional[int] = None
-    tags: List[str] = []
-    assignment_types: List[AssignmentTaskTypeEnum] = []
+    tags: List[str] = Field(default_factory=list)
+    assignment_types: List[AssignmentTaskTypeEnum] = Field(default_factory=list)
+
+    @field_validator("question_count", mode="before")
+    @classmethod
+    def clamp_question_count_for_simple_pilot(cls, value: object) -> int:
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            return SIMPLE_SELF_TEST_DEFAULT_QUESTION_COUNT
+        return max(1, min(count, SIMPLE_SELF_TEST_MAX_QUESTION_COUNT))
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags_for_simple_pilot(cls, value: object) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_items = value.replace("，", ",").replace("、", ",").replace("；", ",").replace(";", ",").split(",")
+        else:
+            try:
+                raw_items = list(value)  # type: ignore[arg-type]
+            except TypeError:
+                raw_items = []
+
+        normalized: List[str] = []
+        for item in raw_items:
+            tag = str(item or "").strip()
+            if tag and tag not in normalized:
+                normalized.append(tag)
+            if len(normalized) >= 20:
+                break
+        return normalized
 
 
 class SubmitSelfTestAnswer(SQLModel):
@@ -27,7 +62,7 @@ class SubmitSelfTestAnswer(SQLModel):
 
 
 class SubmitSelfTestRequest(SQLModel):
-    answers: List[SubmitSelfTestAnswer]
+    answers: List[SubmitSelfTestAnswer] = Field(default_factory=list)
 
 
 class ReviewSelfTestAttemptRequest(SQLModel):
@@ -119,4 +154,4 @@ class SelfTestAttemptRead(SelfTestAttemptBase):
     update_date: str
     submitted_at: Optional[str] = None
     reviewed_at: Optional[str] = None
-    questions: List[SelfTestAttemptQuestionRead] = []
+    questions: List[SelfTestAttemptQuestionRead] = Field(default_factory=list)

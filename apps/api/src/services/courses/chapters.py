@@ -24,6 +24,7 @@ from src.services.courses.locks import (
     is_locked_for_user,
     is_org_admin,
 )
+from src.services.coding_challenges.challenges import sanitize_coding_challenge_content
 
 
 ####################################################
@@ -167,6 +168,22 @@ async def update_chapter(
 
     await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.UPDATE)
 
+    # Moving an indexed chapter across course/org boundaries requires dual
+    # authorization plus coordinated updates to CourseChapter,
+    # ChapterActivity, blocks, and embeddings. This endpoint is a metadata
+    # editor, so fail closed instead of leaving a cross-course dangling graph.
+    if (
+        chapter_object.course_id is not None
+        and chapter_object.course_id != chapter.course_id
+    ) or (
+        chapter_object.org_id is not None
+        and chapter_object.org_id != chapter.org_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Chapter course_id and org_id are immutable",
+        )
+
     # Update only the fields that were passed in
     for var, value in vars(chapter_object).items():
         if value is not None:
@@ -245,7 +262,9 @@ async def get_course_chapters(
         select(Chapter)
         .join(CourseChapter, Chapter.id == CourseChapter.chapter_id) # type: ignore
         .where(CourseChapter.course_id == course_id)
+        .where(CourseChapter.org_id == course.org_id)
         .where(Chapter.course_id == course_id)
+        .where(Chapter.org_id == course.org_id)
         .order_by(CourseChapter.order) # type: ignore
         .group_by(Chapter.id, CourseChapter.order) # type: ignore
     )
@@ -283,6 +302,10 @@ async def get_course_chapters(
                 )
                 .join(Activity, Activity.id == ChapterActivity.activity_id)  # type: ignore
                 .where(ChapterActivity.chapter_id.in_(chapter_ids))  # type: ignore
+                .where(ChapterActivity.course_id == course_id)
+                .where(ChapterActivity.org_id == course.org_id)
+                .where(Activity.course_id == course_id)
+                .where(Activity.org_id == course.org_id)
                 .order_by(ChapterActivity.chapter_id, ChapterActivity.order)  # type: ignore
             )
             if not with_unpublished_activities:
@@ -338,6 +361,10 @@ async def get_course_chapters(
                 select(ChapterActivity, Activity)
                 .join(Activity, Activity.id == ChapterActivity.activity_id)  # type: ignore
                 .where(ChapterActivity.chapter_id.in_(chapter_ids))  # type: ignore
+                .where(ChapterActivity.course_id == course_id)
+                .where(ChapterActivity.org_id == course.org_id)
+                .where(Activity.course_id == course_id)
+                .where(Activity.org_id == course.org_id)
                 .order_by(ChapterActivity.chapter_id, ChapterActivity.order)  # type: ignore
             )
             if not with_unpublished_activities:
@@ -501,7 +528,7 @@ async def DEPRECEATED_get_course_chapters(
             "id": activity.id,
             "name": activity.name,
             "type": activity.activity_type,
-            "content": activity.content,
+            "content": sanitize_coding_challenge_content(activity.content),
         }
 
     # get chapter order
@@ -545,6 +572,45 @@ async def reorder_chapters_and_activities(
 
     # RBAC check
     await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.UPDATE)
+
+    requested_chapter_ids = {
+        item.chapter_id for item in chapters_order.chapter_order_by_ids
+    }
+    requested_activity_ids = {
+        activity_order.activity_id
+        for chapter_order in chapters_order.chapter_order_by_ids
+        for activity_order in chapter_order.activities_order_by_ids
+    }
+    if requested_chapter_ids:
+        valid_chapters = (
+            await db_session.execute(
+                select(Chapter.id).where(
+                    Chapter.id.in_(requested_chapter_ids),
+                    Chapter.course_id == course.id,
+                    Chapter.org_id == course.org_id,
+                )
+            )
+        ).scalars().all()
+        if set(valid_chapters) != requested_chapter_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Chapter order contains a chapter from another course or organization",
+            )
+    if requested_activity_ids:
+        valid_activities = (
+            await db_session.execute(
+                select(Activity.id).where(
+                    Activity.id.in_(requested_activity_ids),
+                    Activity.course_id == course.id,
+                    Activity.org_id == course.org_id,
+                )
+            )
+        ).scalars().all()
+        if set(valid_activities) != requested_activity_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Activity order contains an activity from another course or organization",
+            )
 
     ###########
     # Chapters

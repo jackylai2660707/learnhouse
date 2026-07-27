@@ -11,6 +11,7 @@ from src.db.courses.activities import Activity, ActivityLockType, ActivityRead, 
 from src.db.courses.chapter_activities import ChapterActivity
 from src.db.courses.chapters import Chapter, ChapterCreate, ChapterRead, ChapterUpdate, ChapterUpdateOrder, LockType
 from src.db.courses.course_chapters import CourseChapter
+from src.db.courses.courses import Course
 from src.services.courses.chapters import (
     DEPRECEATED_get_course_chapters,
     _apply_locks_to_chapters,
@@ -121,6 +122,33 @@ class TestUpdateChapter:
         assert len(result.activities) == 1
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "update",
+        [ChapterUpdate(course_id=999), ChapterUpdate(org_id=999)],
+    )
+    async def test_update_chapter_rejects_course_or_org_move(
+        self, db, chapter, admin_user, mock_request, update
+    ):
+        original_course_id = chapter.course_id
+        original_org_id = chapter.org_id
+        with patch(
+            "src.services.courses.chapters.check_resource_access",
+            new_callable=AsyncMock,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await update_chapter(
+                    mock_request,
+                    update,
+                    chapter.id,
+                    admin_user,
+                    db,
+                )
+
+        assert exc_info.value.status_code == 409
+        assert chapter.course_id == original_course_id
+        assert chapter.org_id == original_org_id
+
+    @pytest.mark.asyncio
     async def test_update_chapter_missing_raises(
         self, db, admin_user, mock_request
     ):
@@ -207,6 +235,26 @@ class TestDeleteChapter:
 
 
 class TestCourseChapters:
+    @pytest.mark.asyncio
+    async def test_course_tree_filters_cross_course_activity_link(
+        self, db, other_org, course, chapter, activity, admin_user, mock_request
+    ):
+        activity.course_id = 999
+        activity.org_id = other_org.id
+        db.add(activity)
+        await db.commit()
+
+        chapters = await get_course_chapters(
+            mock_request,
+            course.id,
+            db,
+            admin_user,
+            with_unpublished_activities=True,
+            course=course,
+        )
+
+        assert chapters[0].activities == []
+
     @pytest.mark.asyncio
     async def test_get_course_chapters_slim_full_and_deprecated_paths(
         self, db, course, chapter, activity, admin_user, mock_request
@@ -342,6 +390,77 @@ class TestCourseChapters:
 
 
 class TestReorderChaptersAndActivities:
+    @pytest.mark.asyncio
+    async def test_reorder_rejects_cross_course_or_org_references(
+        self, db, other_org, course, admin_user, mock_request
+    ):
+        other_course = Course(
+            id=2,
+            name="Other course",
+            description="",
+            public=True,
+            published=True,
+            open_to_contributors=False,
+            org_id=other_org.id,
+            course_uuid="course_other_reorder",
+            creation_date="test",
+            update_date="test",
+        )
+        other_chapter = Chapter(
+            id=2,
+            name="Other chapter",
+            description="",
+            org_id=other_org.id,
+            course_id=other_course.id,
+            chapter_uuid="chapter_other_reorder",
+            creation_date="test",
+            update_date="test",
+        )
+        other_activity = Activity(
+            id=2,
+            name="Other activity",
+            activity_type=ActivityTypeEnum.TYPE_DYNAMIC,
+            activity_sub_type=ActivitySubTypeEnum.SUBTYPE_DYNAMIC_PAGE,
+            content={"type": "doc", "content": []},
+            published=True,
+            org_id=other_org.id,
+            course_id=other_course.id,
+            activity_uuid="activity_other_reorder",
+            creation_date="test",
+            update_date="test",
+        )
+        db.add(other_course)
+        db.add(other_chapter)
+        db.add(other_activity)
+        await db.commit()
+
+        payload = ChapterUpdateOrder.model_validate(
+            {
+                "chapter_order_by_ids": [
+                    {
+                        "chapter_id": other_chapter.id,
+                        "activities_order_by_ids": [
+                            {"activity_id": other_activity.id},
+                        ],
+                    }
+                ]
+            }
+        )
+        with patch(
+            "src.services.courses.chapters.check_resource_access",
+            new_callable=AsyncMock,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await reorder_chapters_and_activities(
+                    mock_request,
+                    course.course_uuid,
+                    payload,
+                    admin_user,
+                    db,
+                )
+
+        assert exc_info.value.status_code == 400
+
     @pytest.mark.asyncio
     async def test_reorder_updates_creates_and_deletes_links(
         self, db, org, course, chapter, activity, admin_user, mock_request

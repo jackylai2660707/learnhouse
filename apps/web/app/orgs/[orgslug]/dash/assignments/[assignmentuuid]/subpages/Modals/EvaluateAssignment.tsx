@@ -12,12 +12,25 @@ import TaskFormObject from '../../_components/TaskEditor/Subs/TaskTypes/TaskForm
 import TaskCodeObject from '../../_components/TaskEditor/Subs/TaskTypes/TaskCodeObject';
 import TaskShortAnswerObject from '../../_components/TaskEditor/Subs/TaskTypes/TaskShortAnswerObject';
 import TaskNumberAnswerObject from '../../_components/TaskEditor/Subs/TaskTypes/TaskNumberAnswerObject';
+import TaskEssayObject from '../../_components/TaskEditor/Subs/TaskTypes/TaskEssayObject';
 import { useOrg } from '@components/Contexts/OrgContext';
 import { getTaskRefFileDir } from '@services/media/media';
 import { deleteUserSubmission, getFinalGrade, markActivityAsDoneForUser, putFinalGrade } from '@services/courses/assignments';
 import { useLHSession } from '@components/Contexts/LHSessionContext';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
+
+function responseErrorMessage(response: any, fallback: string) {
+    const detail = response?.data?.detail || response?.data?.message || response?.data?.error || response?.HTTPmessage
+    if (typeof detail === 'string' && detail.trim()) return detail
+    if (Array.isArray(detail)) {
+        return detail
+            .map((item) => item?.msg || item?.message || '')
+            .filter(Boolean)
+            .join('；') || fallback
+    }
+    return fallback
+}
 
 function EvaluateAssignment({ user_id }: any) {
     const { t } = useTranslation()
@@ -33,8 +46,21 @@ function EvaluateAssignment({ user_id }: any) {
     // Grade preview shown at the top of the modal so the teacher can see what
     // the current per-task scores translate to before finalizing.
     const [gradePreview, setGradePreview] = useState<any>(null);
+    const [actionPending, setActionPending] = useState<'grade' | 'finalize' | 'reject' | null>(null);
 
     const assignmentUuid = assignments?.assignment_object?.assignment_uuid;
+    const rawAssignmentUuid = assignmentUuid?.replace('assignment_', '') ?? '';
+
+    function refreshTeacherAssignmentEvidence() {
+        if (!rawAssignmentUuid) return;
+        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.allSubmissions(rawAssignmentUuid) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.analytics(rawAssignmentUuid) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.allCourseAssignments() });
+        if (org?.id) {
+            queryClient.invalidateQueries({ queryKey: queryKeys.assignments.workbench(org.id) });
+            queryClient.invalidateQueries({ queryKey: queryKeys.assignments.gradebookAll(org.id) });
+        }
+    }
 
     // Load any existing grade + feedback when the modal opens so the teacher
     // can edit them instead of starting from scratch.
@@ -55,51 +81,64 @@ function EvaluateAssignment({ user_id }: any) {
     }, [assignmentUuid, user_id, access_token]);
 
     async function gradeAssignment() {
-        const res = await putFinalGrade(user_id, assignmentUuid, access_token, feedback ?? null);
-        if (res.success) {
-            setGradePreview(res.data);
-            toast.success(res.data.message)
-            const rawUuid = assignmentUuid?.replace('assignment_', '') ?? ''
-            queryClient.invalidateQueries({ queryKey: queryKeys.assignments.allSubmissions(rawUuid) })
-            queryClient.invalidateQueries({ queryKey: queryKeys.assignments.analytics(rawUuid) })
-        }
-        else {
-            toast.error(res.data.message)
+        if (!assignmentUuid || !access_token || actionPending) return
+        setActionPending('grade')
+        try {
+            const res = await putFinalGrade(user_id, assignmentUuid, access_token, feedback ?? null);
+            if (res.success) {
+                setGradePreview(res.data);
+                toast.success(res.data?.message || '分數已儲存')
+                refreshTeacherAssignmentEvidence()
+            }
+            else {
+                toast.error(responseErrorMessage(res, '儲存分數失敗'))
+            }
+        } finally {
+            setActionPending(null)
         }
     }
 
     async function finalizeAndComplete() {
-        const gradeRes = await putFinalGrade(user_id, assignmentUuid, access_token, feedback ?? null);
-        if (!gradeRes.success) {
-            toast.error(gradeRes.data.message)
-            return
-        }
-        setGradePreview(gradeRes.data);
-        const doneRes = await markActivityAsDoneForUser(user_id, assignmentUuid, access_token)
-        if (doneRes.success) {
-            toast.success(t('dashboard.assignments.submissions.toasts.finalize_success'))
-            const rawUuid = assignmentUuid?.replace('assignment_', '') ?? ''
-            queryClient.invalidateQueries({ queryKey: queryKeys.assignments.allSubmissions(rawUuid) })
-            queryClient.invalidateQueries({ queryKey: queryKeys.assignments.analytics(rawUuid) })
-            queryClient.invalidateQueries({ queryKey: queryKeys.assignments.submission(rawUuid) })
-        } else {
-            toast.error(doneRes.data.message)
+        if (!assignmentUuid || !access_token || actionPending) return
+        setActionPending('finalize')
+        try {
+            const gradeRes = await putFinalGrade(user_id, assignmentUuid, access_token, feedback ?? null);
+            if (!gradeRes.success) {
+                toast.error(responseErrorMessage(gradeRes, '儲存分數失敗'))
+                return
+            }
+            setGradePreview(gradeRes.data);
+            const doneRes = await markActivityAsDoneForUser(user_id, assignmentUuid, access_token)
+            if (doneRes.success) {
+                toast.success(t('dashboard.assignments.submissions.toasts.finalize_success'))
+                refreshTeacherAssignmentEvidence()
+                queryClient.invalidateQueries({ queryKey: queryKeys.assignments.submission(rawAssignmentUuid) })
+            } else {
+                toast.error(responseErrorMessage(doneRes, '完成批改失敗'))
+            }
+        } finally {
+            setActionPending(null)
         }
     }
 
     async function rejectAssignment() {
-        const res = await deleteUserSubmission(user_id, assignmentUuid, access_token)
-        if (!res.success) {
-            toast.error(res.data?.detail || t('dashboard.assignments.submissions.toasts.reject_success'))
-            return
+        if (!assignmentUuid || !access_token || actionPending) return
+        setActionPending('reject')
+        try {
+            const res = await deleteUserSubmission(user_id, assignmentUuid, access_token)
+            if (!res.success) {
+                toast.error(responseErrorMessage(res, '退回重做失敗'))
+                return
+            }
+            toast.success(t('dashboard.assignments.submissions.toasts.reject_success'))
+            // Revalidate the submissions list + this user's submission caches
+            // so the modal can close cleanly and the list reflects the rollback.
+            refreshTeacherAssignmentEvidence()
+            queryClient.invalidateQueries({ queryKey: queryKeys.assignments.submission(rawAssignmentUuid) })
+            setGradePreview(null)
+        } finally {
+            setActionPending(null)
         }
-        toast.success(t('dashboard.assignments.submissions.toasts.reject_success'))
-        // Revalidate the submissions list + this user's submission caches
-        // so the modal can close cleanly and the list reflects the rollback.
-        const rawUuid = assignmentUuid?.replace('assignment_', '') ?? ''
-        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.allSubmissions(rawUuid) })
-        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.submission(rawUuid) })
-        setGradePreview(null)
     }
 
     const sortedTasks = assignments?.assignment_tasks?.slice().sort((a: any, b: any) => a.id - b.id) || [];
@@ -211,6 +250,7 @@ function EvaluateAssignment({ user_id }: any) {
                             {task.assignment_type === 'CODE' && <TaskCodeObject key={task.assignment_task_uuid} view='grading' user_id={user_id} assignmentTaskUUID={task.assignment_task_uuid} />}
                             {task.assignment_type === 'SHORT_ANSWER' && <TaskShortAnswerObject key={task.assignment_task_uuid} view='grading' user_id={user_id} assignmentTaskUUID={task.assignment_task_uuid} />}
                             {task.assignment_type === 'NUMBER_ANSWER' && <TaskNumberAnswerObject key={task.assignment_task_uuid} view='grading' user_id={user_id} assignmentTaskUUID={task.assignment_task_uuid} />}
+                            {task.assignment_type === 'ESSAY' && <TaskEssayObject key={task.assignment_task_uuid} view='grading' user_id={user_id} assignmentTaskUUID={task.assignment_task_uuid} />}
                         </div>
                     </div>
                     );
@@ -249,10 +289,11 @@ function EvaluateAssignment({ user_id }: any) {
                         status='warning'
                         dialogTrigger={
                             <button
-                                className='flex items-center space-x-1.5 px-3.5 py-2 text-xs font-bold text-rose-700 bg-rose-50 rounded-lg nice-shadow hover:bg-rose-100/80 transition-colors cursor-pointer'
+                                disabled={!!actionPending || !access_token || !assignmentUuid}
+                                className='flex items-center space-x-1.5 px-3.5 py-2 text-xs font-bold text-rose-700 bg-rose-50 rounded-lg nice-shadow hover:bg-rose-100/80 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60'
                             >
                                 <X size={14} />
-                                <span>{t('dashboard.assignments.submissions.actions.reject')}</span>
+                                <span>{actionPending === 'reject' ? '處理中' : t('dashboard.assignments.submissions.actions.reject')}</span>
                             </button>
                         }
                     />
@@ -267,10 +308,11 @@ function EvaluateAssignment({ user_id }: any) {
                     <div className='flex items-center space-x-1.5'>
                         <button
                             onClick={gradeAssignment}
-                            className='flex items-center space-x-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-gray-100 rounded-lg nice-shadow hover:bg-gray-200/80 transition-colors cursor-pointer'
+                            disabled={!!actionPending || !access_token || !assignmentUuid}
+                            className='flex items-center space-x-1.5 px-3.5 py-2 text-xs font-bold text-gray-700 bg-gray-100 rounded-lg nice-shadow hover:bg-gray-200/80 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60'
                         >
                             <BookOpenCheck size={14} />
-                            <span>{t('dashboard.assignments.submissions.actions.set_final_grade')}</span>
+                            <span>{actionPending === 'grade' ? '儲存中' : t('dashboard.assignments.submissions.actions.set_final_grade')}</span>
                         </button>
                         <ToolTip side='top' slateBlack sideOffset={6} content={t('dashboard.assignments.submissions.actions.set_final_grade_description')}>
                             <div className='text-gray-300 hover:text-gray-500 transition-colors cursor-help'>
@@ -281,10 +323,11 @@ function EvaluateAssignment({ user_id }: any) {
                     <div className='flex items-center space-x-1.5'>
                         <button
                             onClick={finalizeAndComplete}
-                            className='flex items-center space-x-1.5 px-3.5 py-2 text-xs font-bold bg-black text-white rounded-lg nice-shadow hover:bg-gray-800 transition-colors cursor-pointer'
+                            disabled={!!actionPending || !access_token || !assignmentUuid}
+                            className='flex items-center space-x-1.5 px-3.5 py-2 text-xs font-bold bg-black text-white rounded-lg nice-shadow hover:bg-gray-800 transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-60'
                         >
                             <Check size={14} />
-                            <span>{t('dashboard.assignments.submissions.actions.finalize')}</span>
+                            <span>{actionPending === 'finalize' ? '儲存中' : t('dashboard.assignments.submissions.actions.finalize')}</span>
                         </button>
                         <ToolTip side='top' slateBlack sideOffset={6} content={t('dashboard.assignments.submissions.actions.finalize_description')}>
                             <div className='text-gray-300 hover:text-gray-500 transition-colors cursor-help'>

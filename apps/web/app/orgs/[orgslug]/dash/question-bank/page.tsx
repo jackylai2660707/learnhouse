@@ -14,7 +14,7 @@ export async function generateMetadata(props: MetadataProps): Promise<Metadata> 
   })
 
   return {
-    title: 'Question Bank - ' + org.name,
+    title: '校本題庫 - ' + org.name,
     robots: {
       index: false,
       follow: false,

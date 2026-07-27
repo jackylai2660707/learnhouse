@@ -4,9 +4,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from sqlmodel import select
 
+from src.db.coding_challenges import CodingChallenge, CodingChallengeTest
 from src.db.courses.activities import ActivityCreate, ActivityRead, ActivityTypeEnum, ActivitySubTypeEnum, ActivityUpdate
 from src.db.organizations import OrganizationRead
+from src.services.ai.rag.embedding_service import (
+    CourseIndexResult,
+    StaleCourseIndexError,
+)
 from src.services.courses.activities.activities import (
     _apply_activity_lock,
     _trigger_course_embedding,
@@ -64,6 +70,47 @@ class TestCreateActivity:
 
         assert isinstance(result, ActivityRead)
         assert result.name == "New Activity"
+
+    @pytest.mark.asyncio
+    async def test_create_activity_syncs_challenge_secrets_to_durable_storage(
+        self, mock_request, db, org, course, chapter, admin_user
+    ):
+        activity_obj = ActivityCreate(
+            name="Coding Activity",
+            activity_type=ActivityTypeEnum.TYPE_DYNAMIC,
+            activity_sub_type=ActivitySubTypeEnum.SUBTYPE_DYNAMIC_PAGE,
+            chapter_id=chapter.id,
+            course_id=course.id,
+            org_id=org.id,
+            content={"type": "doc", "content": [{"type": "blockCode", "attrs": {
+                "id": "block_create",
+                "challengeUuid": "challenge_create",
+                "solutionCode": "private",
+                "testCases": [{"testUuid": "visible_create", "expectedStdout": "ok"}],
+                "hiddenTestCases": [{"testUuid": "hidden_create", "expectedStdout": "private"}],
+            }}]},
+        )
+        with patch(
+            "src.services.courses.activities.activities.check_resource_access",
+            new_callable=AsyncMock,
+        ):
+            result = await create_activity(mock_request, activity_obj, admin_user, db)
+
+        attrs = result.content["content"][0]["attrs"]
+        assert "solutionCode" not in attrs
+        assert "hiddenTestCases" not in attrs
+        challenge = (
+            await db.execute(select(CodingChallenge).where(
+                CodingChallenge.challenge_uuid == "challenge_create"
+            ))
+        ).scalars().one()
+        tests = (
+            await db.execute(select(CodingChallengeTest).where(
+                CodingChallengeTest.challenge_id == challenge.id
+            ))
+        ).scalars().all()
+        assert challenge.solution_code == "private"
+        assert len(tests) == 2
 
 
 class TestGetEditorBootstrap:
@@ -377,10 +424,27 @@ class TestTriggerCourseEmbedding:
         ), patch(
             "src.services.ai.rag.embedding_service.embed_course_content",
             new_callable=AsyncMock,
+            return_value=CourseIndexResult(chunks_indexed=3),
         ) as mock_embed:
             await _trigger_course_embedding(course.id, course.org_id)
 
         mock_embed.assert_called_once_with(course.id, course.org_id, db)
+
+    @pytest.mark.asyncio
+    async def test_stale_background_reindex_is_discarded(self, db, course, caplog):
+        async def fake_get_db():
+            yield db
+
+        with caplog.at_level("INFO"), patch(
+            "src.core.events.database.get_db_session",
+            return_value=fake_get_db(),
+        ), patch(
+            "src.services.ai.rag.embedding_service.embed_course_content",
+            new=AsyncMock(side_effect=StaleCourseIndexError(course.id)),
+        ):
+            await _trigger_course_embedding(course.id, course.org_id)
+
+        assert "stale_discarded" in caplog.text
 
 
 # ---------------------------------------------------------------------------

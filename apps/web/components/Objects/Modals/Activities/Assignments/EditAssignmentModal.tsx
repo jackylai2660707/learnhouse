@@ -1,7 +1,9 @@
 import React from 'react';
 import { updateAssignment } from '@services/courses/assignments';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/query/keys';
+import { useOrg } from '@components/Contexts/OrgContext';
+import { getUserGroups } from '@services/usergroups/usergroups';
 import toast from 'react-hot-toast';
 import * as Form from '@radix-ui/react-form';
 import { useFormik } from 'formik';
@@ -16,34 +18,64 @@ const textareaClass =
     'w-full px-3 py-2 text-sm rounded-lg bg-gray-50 border border-gray-200 outline-none focus:border-gray-300 focus:ring-1 focus:ring-gray-200 transition-colors resize-none';
 const labelClass = 'text-sm font-medium text-gray-700';
 const errorClass = 'text-xs text-red-500';
-import {
-    ALargeSmall,
-    Hash,
-    Percent,
-    ThumbsUp,
-    GraduationCap,
-    Check,
-    Zap,
-    Shield,
-    AlertTriangle,
-    Eye,
-    RotateCcw,
-    Infinity as InfinityIcon,
-} from 'lucide-react';
 
-type GradingType = 'ALPHABET' | 'NUMERIC' | 'PERCENTAGE' | 'PASS_FAIL' | 'GPA_SCALE';
+function normalizeUsergroupIds(value: any): number[] {
+    if (!Array.isArray(value)) return [];
+    const ids: number[] = [];
+    value.forEach((item) => {
+        const id = Number(item);
+        if (Number.isFinite(id) && !ids.includes(id)) {
+            ids.push(id);
+        }
+    });
+    return ids;
+}
+
+function responseErrorMessage(response: any, fallback: string) {
+    const detail = response?.data?.detail ?? response?.data?.message ?? response?.detail ?? response?.message;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (detail && typeof detail.message === 'string') return detail.message;
+    if (response instanceof Error && response.message) return response.message;
+    if (Array.isArray(detail)) return detail.map((item) => item?.msg || String(item)).join('；');
+    return fallback;
+}
+
+function dateInputValue(date: Date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+import {
+    Loader2,
+    RotateCcw,
+    School,
+    UsersRound,
+} from 'lucide-react';
 
 interface Assignment {
     assignment_uuid: string;
     title: string;
     description: string;
     due_date?: string;
-    grading_type?: GradingType;
-    auto_grading?: boolean;
-    anti_copy_paste?: boolean;
-    show_correct_answers?: boolean;
-    allow_retries?: boolean;
+    grading_type?: string;
+    auto_grading?: boolean | string | number;
+    anti_copy_paste?: boolean | string | number;
+    show_correct_answers?: boolean | string | number;
+    allow_retries?: boolean | string | number;
     max_retries?: number;
+    subject?: string;
+    education_stage?: string;
+    grade_level?: string;
+    school_year?: string;
+    term?: string;
+    unit?: string;
+    learning_objectives?: string[];
+    target_usergroup_ids?: number[];
+    score_policy?: string;
+    teacher_review_required?: boolean | string | number;
+    teacher_review_status?: string;
     assignment_tasks?: any[];
 }
 
@@ -60,68 +92,6 @@ interface EditAssignmentModalProps {
     accessToken: string;
 }
 
-const GRADING_TYPES: {
-    value: GradingType;
-    labelKey: string;
-    descriptionKey: string;
-    icon: React.ReactNode;
-    color: string;
-    selectedBorder: string;
-    selectedBg: string;
-    illustration: string;
-}[] = [
-    {
-        value: 'ALPHABET',
-        labelKey: 'dashboard.assignments.modals.edit.form.grading_types.alphabet',
-        descriptionKey: 'dashboard.assignments.modals.edit.form.grading_type_descriptions.alphabet',
-        icon: <ALargeSmall size={20} />,
-        color: 'text-violet-600',
-        selectedBorder: 'border-violet-400',
-        selectedBg: 'bg-violet-50',
-        illustration: 'A  B  C',
-    },
-    {
-        value: 'NUMERIC',
-        labelKey: 'dashboard.assignments.modals.edit.form.grading_types.numeric',
-        descriptionKey: 'dashboard.assignments.modals.edit.form.grading_type_descriptions.numeric',
-        icon: <Hash size={20} />,
-        color: 'text-blue-600',
-        selectedBorder: 'border-blue-400',
-        selectedBg: 'bg-blue-50',
-        illustration: '0 — 100',
-    },
-    {
-        value: 'PERCENTAGE',
-        labelKey: 'dashboard.assignments.modals.edit.form.grading_types.percentage',
-        descriptionKey: 'dashboard.assignments.modals.edit.form.grading_type_descriptions.percentage',
-        icon: <Percent size={20} />,
-        color: 'text-emerald-600',
-        selectedBorder: 'border-emerald-400',
-        selectedBg: 'bg-emerald-50',
-        illustration: '85%',
-    },
-    {
-        value: 'PASS_FAIL',
-        labelKey: 'dashboard.assignments.modals.edit.form.grading_types.pass_fail',
-        descriptionKey: 'dashboard.assignments.modals.edit.form.grading_type_descriptions.pass_fail',
-        icon: <ThumbsUp size={20} />,
-        color: 'text-amber-600',
-        selectedBorder: 'border-amber-400',
-        selectedBg: 'bg-amber-50',
-        illustration: 'P / F',
-    },
-    {
-        value: 'GPA_SCALE',
-        labelKey: 'dashboard.assignments.modals.edit.form.grading_types.gpa_scale',
-        descriptionKey: 'dashboard.assignments.modals.edit.form.grading_type_descriptions.gpa_scale',
-        icon: <GraduationCap size={20} />,
-        color: 'text-rose-600',
-        selectedBorder: 'border-rose-400',
-        selectedBg: 'bg-rose-50',
-        illustration: '0.0 — 4.0',
-    },
-];
-
 const EditAssignmentForm: React.FC<EditAssignmentFormProps> = ({
     onClose,
     assignment,
@@ -129,59 +99,115 @@ const EditAssignmentForm: React.FC<EditAssignmentFormProps> = ({
 }) => {
     const { t } = useTranslation()
     const queryClient = useQueryClient()
+    const org = useOrg() as any
 
-    // Auto-grading is incompatible with file-submission tasks — those need
-    // human review. If any such task exists, we force the toggle off and
-    // show a note explaining why.
-    const hasFileSubmissionTask = (assignment.assignment_tasks || []).some(
-        (t: any) => t.assignment_type === 'FILE_SUBMISSION'
-    );
+    const usergroupsQuery = useQuery({
+        queryKey: queryKeys.usergroups.list(org?.id),
+        queryFn: async () => {
+            const res = await getUserGroups(org.id, accessToken)
+            if (res.success === false) {
+                throw new Error(res?.data?.detail || '讀取班級/群組失敗')
+            }
+            return Array.isArray(res.data) ? res.data : []
+        },
+        enabled: !!org?.id && !!accessToken,
+        staleTime: 60_000,
+    })
+    const usergroups = Array.isArray(usergroupsQuery.data) ? usergroupsQuery.data : []
+    const usergroupSelectionTouchedRef = React.useRef(false);
+    const todayDate = React.useMemo(() => dateInputValue(new Date()), []);
 
     const formik = useFormik({
         initialValues: {
             title: assignment.title || '',
             description: assignment.description || '',
             due_date: assignment.due_date || '',
-            grading_type: assignment.grading_type || 'ALPHABET',
-            auto_grading: assignment.auto_grading || false,
-            anti_copy_paste: assignment.anti_copy_paste || false,
-            show_correct_answers: assignment.show_correct_answers || false,
-            allow_retries: assignment.allow_retries || false,
-            // 0 means unlimited — kept as a number so the input below stays
-            // numeric and the backend doesn't have to coerce strings.
-            max_retries:
-                typeof assignment.max_retries === 'number' ? assignment.max_retries : 0,
+            subject: assignment.subject || '',
+            education_stage: assignment.education_stage || '',
+            grade_level: assignment.grade_level || '',
+            school_year: assignment.school_year || '',
+            term: assignment.term || '',
+            unit: assignment.unit || '',
+            learning_objectives: (assignment.learning_objectives || []).join('\n'),
+            target_usergroup_ids: normalizeUsergroupIds(assignment.target_usergroup_ids),
         },
         enableReinitialize: true,
         onSubmit: async (values, { setSubmitting }) => {
-            // Never send auto_grading=true when the assignment has a file task.
-            // Also drop max_retries back to 0 when retries are turned off so a
-            // stale number doesn't sit in the DB and reappear if the teacher
-            // toggles retries back on later.
-            const payload: any = hasFileSubmissionTask
-                ? { ...values, auto_grading: false }
-                : { ...values };
-            if (!payload.allow_retries) {
-                payload.max_retries = 0;
+            if (
+                values.due_date &&
+                values.due_date < todayDate &&
+                values.due_date !== (assignment.due_date || '')
+            ) {
+                toast.error('截止日期不能早於今天。');
+                setSubmitting(false);
+                return;
             }
+            const payload: any = { ...values };
+            payload.learning_objectives = String(payload.learning_objectives || '')
+                .split('\n')
+                .map((item) => item.trim())
+                .filter(Boolean);
+            payload.target_usergroup_ids = normalizeUsergroupIds(payload.target_usergroup_ids);
+            payload.grading_type = 'PERCENTAGE';
+            payload.auto_grading = true;
+            payload.anti_copy_paste = false;
+            payload.show_correct_answers = true;
+            payload.allow_retries = true;
+            payload.max_retries = 0;
+            payload.score_policy = 'highest';
+            payload.teacher_review_required = false;
+            payload.teacher_review_status = 'not_required';
             const toast_loading = toast.loading(t('dashboard.assignments.modals.edit.toasts.updating'));
             try {
                 const res = await updateAssignment(payload, assignment.assignment_uuid, accessToken);
                 if (res.success) {
                     queryClient.invalidateQueries({ queryKey: queryKeys.assignments.detail(assignment.assignment_uuid) });
+                    queryClient.invalidateQueries({ queryKey: queryKeys.assignments.allCourseAssignments() });
+                    if (org?.id) {
+                        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.workbench(org.id) });
+                        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.gradebookAll(org.id) });
+                    }
                     toast.success(t('dashboard.assignments.modals.edit.toasts.success'));
                     onClose();
                 } else {
-                    toast.error(t('dashboard.assignments.modals.edit.toasts.error'));
+                    toast.error(responseErrorMessage(res, t('dashboard.assignments.modals.edit.toasts.error')));
                 }
             } catch (error) {
-                toast.error(t('dashboard.assignments.modals.edit.toasts.error_detail'));
+                toast.error(responseErrorMessage(error, t('dashboard.assignments.modals.edit.toasts.error_detail')));
             } finally {
                 toast.dismiss(toast_loading);
                 setSubmitting(false);
             }
         }
     });
+    const selectedUsergroupIds = normalizeUsergroupIds(formik.values.target_usergroup_ids);
+    const selectedUsergroupCount = selectedUsergroupIds.length;
+
+    React.useEffect(() => {
+        if (
+            usergroupSelectionTouchedRef.current ||
+            selectedUsergroupCount > 0 ||
+            usergroups.length !== 1
+        ) {
+            return;
+        }
+        const onlyGroupId = Number(usergroups[0]?.id);
+        if (Number.isFinite(onlyGroupId)) {
+            formik.setFieldValue('target_usergroup_ids', [onlyGroupId], false);
+        }
+    }, [formik, selectedUsergroupCount, usergroups]);
+
+    const toggleUsergroup = (groupId: number) => {
+        usergroupSelectionTouchedRef.current = true;
+        const current = normalizeUsergroupIds(formik.values.target_usergroup_ids);
+        formik.setFieldValue(
+            'target_usergroup_ids',
+            current.includes(groupId)
+                ? current.filter((id: number) => id !== groupId)
+                : [...current, groupId],
+            true
+        );
+    };
 
     return (
         <Form.Root onSubmit={formik.handleSubmit} className="space-y-5">
@@ -208,14 +234,11 @@ const EditAssignmentForm: React.FC<EditAssignmentFormProps> = ({
                 <Form.Label className={labelClass}>
                     {t('dashboard.assignments.modals.edit.form.description_label')}
                 </Form.Label>
-                <Form.Message match="valueMissing" className={errorClass}>
-                    {t('dashboard.assignments.modals.edit.form.description_required')}
-                </Form.Message>
                 <Form.Control asChild>
                     <textarea
                         onChange={formik.handleChange}
                         value={formik.values.description}
-                        required
+                        placeholder={t('dashboard.assignments.modals.edit.form.description_placeholder')}
                         rows={3}
                         className={textareaClass}
                     />
@@ -235,108 +258,137 @@ const EditAssignmentForm: React.FC<EditAssignmentFormProps> = ({
                         onChange={formik.handleChange}
                         value={formik.values.due_date}
                         required
+                        min={
+                            formik.values.due_date && formik.values.due_date < todayDate
+                                ? formik.values.due_date
+                                : todayDate
+                        }
                         className={inputClass}
                     />
                 </Form.Control>
             </Form.Field>
 
-            {/* Grading type */}
-            <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                    <p className={labelClass}>
-                        {t('dashboard.assignments.modals.edit.form.grading_type_label')}
-                    </p>
-                    <p className="text-[10px] text-gray-400">
-                        {t('dashboard.assignments.modals.edit.form.grading_type_hint')}
-                    </p>
+            <div className="rounded-xl nice-shadow p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                    <UsersRound size={16} className="text-gray-500" />
+                    <p className={labelClass}>發布對象</p>
                 </div>
-                <div className="grid grid-cols-3 gap-2.5">
-                    {GRADING_TYPES.map((gt) => {
-                        const isSelected = formik.values.grading_type === gt.value;
-                        return (
-                            <button
-                                key={gt.value}
-                                type="button"
-                                onClick={() => formik.setFieldValue('grading_type', gt.value, true)}
-                                className={`relative flex flex-col items-center text-center p-4 rounded-xl nice-shadow bg-white transition-all cursor-pointer ${
-                                    isSelected
-                                        ? `${gt.selectedBg} ring-2 ${gt.selectedBorder.replace('border-', 'ring-')}`
-                                        : 'hover:bg-gray-50/60'
-                                }`}
-                            >
-                                {isSelected && (
-                                    <div className={`absolute top-2 right-2 w-4 h-4 rounded-full flex items-center justify-center ${gt.color} bg-white nice-shadow`}>
-                                        <Check size={10} strokeWidth={3} />
-                                    </div>
-                                )}
-                                <div className={`text-lg font-mono font-bold mb-2 tracking-wider ${isSelected ? gt.color : 'text-gray-300'}`}>
-                                    {gt.illustration}
-                                </div>
-                                <div className={`mb-1 ${isSelected ? gt.color : 'text-gray-400'}`}>
-                                    {gt.icon}
-                                </div>
-                                <p className={`text-xs font-bold ${isSelected ? 'text-gray-900' : 'text-gray-500'}`}>
-                                    {t(gt.labelKey)}
+                <div className="space-y-2">
+                    <p className="text-xs font-semibold text-gray-600">班級/群組</p>
+                    <div className="flex flex-wrap gap-2">
+                        {usergroupsQuery.isError && (
+                            <div className="w-full rounded-lg border border-rose-100 bg-rose-50 px-3 py-2">
+                                <p className="text-xs font-bold text-rose-700">
+                                    {(usergroupsQuery.error as Error)?.message || '讀取班級/群組失敗'}
                                 </p>
-                                <p className='text-[10px] text-gray-400 mt-0.5 leading-tight'>
-                                    {t(gt.descriptionKey)}
-                                </p>
-                            </button>
-                        );
-                    })}
+                                <button
+                                    type="button"
+                                    onClick={() => usergroupsQuery.refetch()}
+                                    disabled={usergroupsQuery.isFetching}
+                                    className="mt-2 inline-flex h-8 items-center gap-1.5 rounded-lg bg-white px-3 text-xs font-black text-rose-800 ring-1 ring-inset ring-rose-200 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    {usergroupsQuery.isFetching ? <Loader2 size={13} className="animate-spin" /> : <RotateCcw size={13} />}
+                                    {usergroupsQuery.isFetching ? '載入中' : '重新讀取班級'}
+                                </button>
+                            </div>
+                        )}
+                        {!usergroupsQuery.isError && usergroups.map((group: any) => {
+                            const groupId = Number(group.id);
+                            const active = selectedUsergroupIds.includes(groupId);
+                            return (
+                                <button
+                                    key={group.id}
+                                    type="button"
+                                    onClick={() => toggleUsergroup(groupId)}
+                                    className={`rounded-full px-3 py-1.5 text-xs font-bold border ${
+                                        active
+                                            ? 'bg-gray-900 text-white border-gray-900'
+                                            : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
+                                    }`}
+                                >
+                                    {group.name}
+                                </button>
+                            );
+                        })}
+                        {!usergroupsQuery.isError && usergroups.length === 0 && (
+                            <span className="text-xs text-gray-400">未建立班級/群組時可先存草稿；正式試行前請先匯入學生並建立班級。</span>
+                        )}
+                    </div>
+                    {!usergroupsQuery.isError && usergroups.length > 0 && selectedUsergroupCount === 0 && (
+                        <p className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-800">
+                            發布前請先指定班級/群組；草稿可以先儲存，稍後再補上。
+                        </p>
+                    )}
+                </div>
+                <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-[11px] font-semibold text-emerald-800">
+                    簡單模式：只用選擇題、填空題和短問答；可用 AI、題庫或手動出題。學生可看答案再重做；預設取最高分並自動批改。
                 </div>
             </div>
 
-            {/* Grading options */}
-            <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                    <p className={labelClass}>
-                        {t('dashboard.assignments.modals.edit.form.grading_options_label')}
-                    </p>
-                    <p className="text-[10px] text-gray-400">
-                        {t('dashboard.assignments.modals.edit.form.grading_options_hint')}
-                    </p>
+            <div className="rounded-xl nice-shadow p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                    <School size={16} className="text-gray-500" />
+                    <div>
+                        <p className={labelClass}>AI 出題資料（可選）</p>
+                        <p className="text-[11px] font-semibold text-gray-500">
+                            填得越清楚，AI 生成的選擇、填空、短問答越貼近課堂。
+                        </p>
+                    </div>
                 </div>
-                <div className="space-y-2">
-                    <ToggleRow
-                        icon={<Zap size={16} className="text-amber-500" />}
-                        label={t('dashboard.assignments.modals.edit.form.auto_grading_label')}
-                        description={
-                            hasFileSubmissionTask
-                                ? t('dashboard.assignments.modals.edit.form.auto_grading_disabled_file')
-                                : t('dashboard.assignments.modals.edit.form.auto_grading_description')
-                        }
-                        checked={!hasFileSubmissionTask && formik.values.auto_grading}
-                        disabled={hasFileSubmissionTask}
-                        onChange={(v) => formik.setFieldValue('auto_grading', v, true)}
-                        warning={hasFileSubmissionTask}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <FieldInput
+                        label="科目"
+                        value={formik.values.subject}
+                        onChange={(value) => formik.setFieldValue('subject', value, true)}
+                        placeholder="例如：中文、數學、常識、Python"
                     />
-                    <ToggleRow
-                        icon={<Shield size={16} className="text-cyan-500" />}
-                        label={t('dashboard.assignments.modals.edit.form.anti_copy_paste_label')}
-                        description={t('dashboard.assignments.modals.edit.form.anti_copy_paste_description')}
-                        checked={formik.values.anti_copy_paste}
-                        onChange={(v) => formik.setFieldValue('anti_copy_paste', v, true)}
+                    <label className="space-y-1.5">
+                        <span className="text-xs font-semibold text-gray-600">學段</span>
+                        <select
+                            value={formik.values.education_stage}
+                            onChange={(event) => formik.setFieldValue('education_stage', event.target.value, true)}
+                            className={inputClass}
+                        >
+                            <option value="">未設定</option>
+                            <option value="primary">小學</option>
+                            <option value="secondary">中學</option>
+                        </select>
+                    </label>
+                    <FieldInput
+                        label="年級"
+                        value={formik.values.grade_level}
+                        onChange={(value) => formik.setFieldValue('grade_level', value, true)}
+                        placeholder="例如：小四 / 中一"
                     />
-                    <ToggleRow
-                        icon={<Eye size={16} className="text-indigo-500" />}
-                        label={t('dashboard.assignments.modals.edit.form.show_correct_answers_label')}
-                        description={t('dashboard.assignments.modals.edit.form.show_correct_answers_description')}
-                        checked={formik.values.show_correct_answers}
-                        onChange={(v) => formik.setFieldValue('show_correct_answers', v, true)}
+                    <FieldInput
+                        label="學年"
+                        value={formik.values.school_year}
+                        onChange={(value) => formik.setFieldValue('school_year', value, true)}
+                        placeholder="例如：2026-2027"
                     />
-                    <RetryRow
-                        allowRetries={formik.values.allow_retries}
-                        maxRetries={formik.values.max_retries}
-                        onAllowChange={(v) => formik.setFieldValue('allow_retries', v, true)}
-                        onMaxChange={(n) => formik.setFieldValue('max_retries', n, true)}
-                        labelAllow={t('dashboard.assignments.modals.edit.form.allow_retries_label')}
-                        descriptionAllow={t('dashboard.assignments.modals.edit.form.allow_retries_description')}
-                        labelMax={t('dashboard.assignments.modals.edit.form.max_retries_label')}
-                        helperUnlimited={t('dashboard.assignments.modals.edit.form.max_retries_unlimited')}
-                        helperBounded={t('dashboard.assignments.modals.edit.form.max_retries_bounded')}
+                    <FieldInput
+                        label="學期"
+                        value={formik.values.term}
+                        onChange={(value) => formik.setFieldValue('term', value, true)}
+                        placeholder="例如：第一學期"
+                    />
+                    <FieldInput
+                        label="單元"
+                        value={formik.values.unit}
+                        onChange={(value) => formik.setFieldValue('unit', value, true)}
+                        placeholder="例如：分數比較 / 水循環"
                     />
                 </div>
+                <label className="space-y-1.5 block">
+                    <span className="text-xs font-semibold text-gray-600">學習目標（可選，每行一項）</span>
+                    <textarea
+                        value={formik.values.learning_objectives}
+                        onChange={(event) => formik.setFieldValue('learning_objectives', event.target.value, true)}
+                        rows={3}
+                        className={textareaClass}
+                        placeholder={'學生能理解基本概念\n學生能完成一個小練習'}
+                    />
+                </label>
             </div>
 
             <div className="flex justify-end space-x-3">
@@ -388,170 +440,27 @@ const EditAssignmentModal: React.FC<EditAssignmentModalProps> = ({
     );
 };
 
-function ToggleRow({
-    icon,
+function FieldInput({
     label,
-    description,
-    checked,
-    disabled,
+    value,
     onChange,
-    warning,
+    placeholder,
 }: {
-    icon: React.ReactNode;
     label: string;
-    description: string;
-    checked: boolean;
-    disabled?: boolean;
-    onChange: (next: boolean) => void;
-    warning?: boolean;
+    value: string;
+    onChange: (value: string) => void;
+    placeholder?: string;
 }) {
     return (
-        <div className={`flex items-start justify-between gap-3 p-3 rounded-xl border nice-shadow ${
-            disabled ? 'bg-gray-50 border-gray-100' : 'bg-white border-gray-100'
-        }`}>
-            <div className="flex items-start gap-2.5 flex-1 min-w-0">
-                <div className="mt-0.5 flex-none">{icon}</div>
-                <div className="flex flex-col min-w-0">
-                    <div className="flex items-center gap-2">
-                        <p className="text-xs font-bold text-gray-900">{label}</p>
-                        {warning && (
-                            <AlertTriangle size={12} className="text-amber-500 flex-none" />
-                        )}
-                    </div>
-                    <p className="text-[10px] text-gray-500 leading-snug mt-0.5">
-                        {description}
-                    </p>
-                </div>
-            </div>
-            <button
-                type="button"
-                onClick={() => !disabled && onChange(!checked)}
-                disabled={disabled}
-                aria-pressed={checked}
-                className={`relative flex-none inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                    disabled
-                        ? 'bg-gray-200 cursor-not-allowed'
-                        : checked
-                            ? 'bg-gray-900'
-                            : 'bg-gray-200 hover:bg-gray-300'
-                }`}
-            >
-                <span
-                    className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                        checked ? 'translate-x-5' : 'translate-x-1'
-                    }`}
-                />
-            </button>
-        </div>
-    );
-}
-
-function RetryRow({
-    allowRetries,
-    maxRetries,
-    onAllowChange,
-    onMaxChange,
-    labelAllow,
-    descriptionAllow,
-    labelMax,
-    helperUnlimited,
-    helperBounded,
-}: {
-    allowRetries: boolean;
-    maxRetries: number;
-    onAllowChange: (next: boolean) => void;
-    onMaxChange: (next: number) => void;
-    labelAllow: string;
-    descriptionAllow: string;
-    labelMax: string;
-    helperUnlimited: string;
-    helperBounded: string;
-}) {
-    return (
-        <div className="rounded-xl border nice-shadow bg-white border-gray-100 overflow-hidden">
-            <div className="flex items-start justify-between gap-3 p-3">
-                <div className="flex items-start gap-2.5 flex-1 min-w-0">
-                    <div className="mt-0.5 flex-none">
-                        <RotateCcw size={16} className="text-fuchsia-500" />
-                    </div>
-                    <div className="flex flex-col min-w-0">
-                        <p className="text-xs font-bold text-gray-900">{labelAllow}</p>
-                        <p className="text-[10px] text-gray-500 leading-snug mt-0.5">
-                            {descriptionAllow}
-                        </p>
-                    </div>
-                </div>
-                <button
-                    type="button"
-                    onClick={() => onAllowChange(!allowRetries)}
-                    aria-pressed={allowRetries}
-                    className={`relative flex-none inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                        allowRetries ? 'bg-gray-900' : 'bg-gray-200 hover:bg-gray-300'
-                    }`}
-                >
-                    <span
-                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                            allowRetries ? 'translate-x-5' : 'translate-x-1'
-                        }`}
-                    />
-                </button>
-            </div>
-            {allowRetries && (
-                <div className="border-t border-gray-100 px-3 py-3 bg-gray-50/50">
-                    <div className="flex items-center justify-between gap-3">
-                        <div className="flex flex-col min-w-0">
-                            <p className="text-[11px] font-semibold text-gray-700">
-                                {labelMax}
-                            </p>
-                            <p className="text-[10px] text-gray-500 leading-snug mt-0.5 flex items-center gap-1">
-                                {maxRetries === 0 ? (
-                                    <>
-                                        <InfinityIcon size={11} className="text-fuchsia-500" />
-                                        <span>{helperUnlimited}</span>
-                                    </>
-                                ) : (
-                                    <span>{helperBounded}</span>
-                                )}
-                            </p>
-                        </div>
-                        <div className="flex-none flex items-center gap-2">
-                            <button
-                                type="button"
-                                onClick={() =>
-                                    onMaxChange(Math.max(0, (maxRetries || 0) - 1))
-                                }
-                                className="h-7 w-7 rounded-md bg-white border border-gray-200 nice-shadow text-gray-600 hover:bg-gray-50 text-sm font-bold"
-                            >
-                                −
-                            </button>
-                            <input
-                                type="number"
-                                min={0}
-                                max={20}
-                                value={maxRetries}
-                                onChange={(e) => {
-                                    const raw = parseInt(e.target.value, 10);
-                                    const clamped = isNaN(raw)
-                                        ? 0
-                                        : Math.max(0, Math.min(20, raw));
-                                    onMaxChange(clamped);
-                                }}
-                                className="w-12 h-7 text-center text-sm font-bold text-gray-900 bg-white border border-gray-200 rounded-md outline-none focus:ring-1 focus:ring-gray-300"
-                            />
-                            <button
-                                type="button"
-                                onClick={() =>
-                                    onMaxChange(Math.min(20, (maxRetries || 0) + 1))
-                                }
-                                className="h-7 w-7 rounded-md bg-white border border-gray-200 nice-shadow text-gray-600 hover:bg-gray-50 text-sm font-bold"
-                            >
-                                +
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-        </div>
+        <label className="space-y-1.5">
+            <span className="text-xs font-semibold text-gray-600">{label}</span>
+            <input
+                value={value}
+                onChange={(event) => onChange(event.target.value)}
+                placeholder={placeholder}
+                className={inputClass}
+            />
+        </label>
     );
 }
 

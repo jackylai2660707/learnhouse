@@ -35,6 +35,14 @@ export async function getOrgSelfTestAttempts(orgId: number, accessToken: string,
   return getResponseMetadata(result)
 }
 
+export async function discardStartedSelfTest(attemptUuid: string, accessToken: string) {
+  const result = await fetch(
+    `${getAPIUrl()}self-tests/attempts/${attemptUuid}`,
+    RequestBodyWithAuthHeader('DELETE', null, null, accessToken)
+  )
+  return getResponseMetadata(result)
+}
+
 export async function reviewSelfTestAttempt(attemptUuid: string, body: any, accessToken: string) {
   const result = await fetch(
     `${getAPIUrl()}self-tests/attempts/${attemptUuid}/review`,

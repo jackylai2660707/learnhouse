@@ -13,6 +13,7 @@ from src.db.self_tests import (
 from src.db.users import PublicUser
 from src.security.auth import get_authenticated_user
 from src.services.self_tests import (
+    discard_started_self_test,
     list_my_self_test_attempts,
     list_org_self_test_attempts,
     read_self_test_attempt,
@@ -69,6 +70,15 @@ async def api_read_self_test_attempt(
     db_session: AsyncSession = Depends(get_db_session),
 ) -> SelfTestAttemptRead:
     return await read_self_test_attempt(attempt_uuid, current_user, db_session)
+
+
+@router.delete("/attempts/{attempt_uuid}")
+async def api_discard_started_self_test(
+    attempt_uuid: str,
+    current_user: PublicUser = Depends(get_authenticated_user),
+    db_session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    return await discard_started_self_test(attempt_uuid, current_user, db_session)
 
 
 @router.patch("/attempts/{attempt_uuid}/review", response_model=SelfTestAttemptRead)

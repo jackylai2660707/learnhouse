@@ -14,10 +14,13 @@ import {
   handleAssignmentTaskSubmission,
   updateAssignmentTask,
 } from '@services/courses/assignments'
+import { queryKeys } from '@/lib/query/keys'
 import { CheckCircle2, XCircle } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import React, { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import { useTranslation } from 'react-i18next'
+import { coerceSimplePilotBoolean } from '@lib/simple-pilot-assignments'
 
 type NumberAnswerContents = {
   prompt: string
@@ -66,31 +69,43 @@ function TaskNumberAnswerObject({
   const assignmentTaskState = useAssignmentsTask() as any
   const assignmentTaskStateHook = useAssignmentsTaskDispatch() as any
   const assignment = useAssignments() as any
+  const queryClient = useQueryClient()
   // Same reveal gate as the other task types: teacher must opt in, and the
   // submission must already be GRADED before any correct-answer hint appears.
   const assignmentSubmission = useAssignmentSubmission() as any
+  const assignmentSubmissionStatus = Array.isArray(assignmentSubmission) && assignmentSubmission.length > 0
+    ? assignmentSubmission[0].submission_status
+    : null
+  const assignmentAttemptNumber = Array.isArray(assignmentSubmission) && assignmentSubmission.length > 0
+    ? assignmentSubmission[0].attempt_number
+    : null
+  const submissionIsFinal = view === 'student'
+    && !!assignmentSubmissionStatus
+    && !['PENDING', 'NOT_SUBMITTED'].includes(assignmentSubmissionStatus)
   const submissionIsGraded = Array.isArray(assignmentSubmission)
     && assignmentSubmission.length > 0
-    && assignmentSubmission[0].submission_status === 'GRADED'
+    && assignmentSubmissionStatus === 'GRADED'
   const showCorrectAnswers = view === 'student'
     && submissionIsGraded
-    && !!assignment?.assignment_object?.show_correct_answers
+    && coerceSimplePilotBoolean(assignment?.assignment_object?.show_correct_answers)
 
   const [contents, setContents] = useState<NumberAnswerContents>(DEFAULT_CONTENTS)
   const [studentAnswer, setStudentAnswer] = useState<string>('')
   const [initialAnswer, setInitialAnswer] = useState<string>('')
-  const [showSavingDisclaimer, setShowSavingDisclaimer] = useState(false)
 
   const [userSubmissions, setUserSubmissions] = useState<any>(null)
   const [userSubmissionObject, setUserSubmissionObject] = useState<any>(null)
   const [assignmentTaskOutsideProvider, setAssignmentTaskOutsideProvider] =
     useState<any>(null)
+  const showSavingDisclaimer = view === 'student' && studentAnswer !== initialAnswer
 
   // --- TEACHER VIEW ---
   useEffect(() => {
     if (view === 'teacher' && assignmentTaskState?.assignmentTask?.contents) {
       const c = assignmentTaskState.assignmentTask.contents
       if (c.prompt !== undefined || c.correct_value !== undefined) {
+        // The selected task is external provider state; refresh this local edit buffer when it changes.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setContents(normalizeContents(c))
       }
     }
@@ -120,6 +135,10 @@ function TaskNumberAnswerObject({
       const saved = res.data.task_submission?.answer ?? ''
       setStudentAnswer(String(saved))
       setInitialAnswer(String(saved))
+    } else {
+      setUserSubmissions(null)
+      setStudentAnswer('')
+      setInitialAnswer('')
     }
   }
 
@@ -142,19 +161,15 @@ function TaskNumberAnswerObject({
 
   useEffect(() => {
     if (view === 'student') {
+      // These async loaders update state only after their API requests resolve.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       loadTaskDefinition()
       loadOwnSubmission()
     } else if (view === 'grading') {
       loadTaskDefinition()
       loadUserSubmission()
     }
-  }, [view, assignmentTaskUUID, assignment, access_token])
-
-  useEffect(() => {
-    if (view === 'student') {
-      setShowSavingDisclaimer(studentAnswer !== initialAnswer)
-    }
-  }, [studentAnswer, initialAnswer, view])
+  }, [view, assignmentTaskUUID, assignment, access_token, assignmentSubmissionStatus, assignmentAttemptNumber]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- SAVE (teacher) ---
   async function saveFC() {
@@ -167,6 +182,7 @@ function TaskNumberAnswerObject({
     )
     if (res.success) {
       assignmentTaskStateHook({ type: 'reload' })
+      queryClient.invalidateQueries({ queryKey: queryKeys.assignments.allCourseAssignments() })
       toast.success(t('dashboard.assignments.editor.toasts.task_updated'))
     } else {
       toast.error(t('dashboard.assignments.editor.toasts.task_update_error'))
@@ -181,6 +197,16 @@ function TaskNumberAnswerObject({
   // grading loop also means DevTools tampering can't inflate the score.
   async function submitFC() {
     if (!assignmentTaskUUID) return
+    if (submissionIsFinal) {
+      toast.error('這份作業已提交，請按「重做」後再修改答案。')
+      return
+    }
+    if (!studentAnswer.trim()) {
+      toast.error(t('assignments.save_number_answer_first', {
+        defaultValue: '請先輸入答案，再儲存本題。',
+      }))
+      return
+    }
     const values = {
       assignment_task_submission_uuid:
         userSubmissions?.assignment_task_submission_uuid || null,
@@ -199,8 +225,10 @@ function TaskNumberAnswerObject({
     if (res.success) {
       setUserSubmissions(res.data)
       setInitialAnswer(studentAnswer)
-      setShowSavingDisclaimer(false)
-      toast.success(t('dashboard.assignments.editor.toasts.task_saved'))
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.assignments.taskSubmission(assignment.assignment_object.assignment_uuid),
+      })
+      toast.success(t('assignments.task_answer_saved_not_submitted'))
     } else {
       toast.error(t('dashboard.assignments.editor.toasts.task_save_error'))
     }
@@ -216,7 +244,7 @@ function TaskNumberAnswerObject({
 
   return (
     <AssignmentBoxUI
-      type="form"
+      type="number-answer"
       view={view}
       saveFC={saveFC}
       submitFC={submitFC}
@@ -227,11 +255,11 @@ function TaskNumberAnswerObject({
       }
       showSavingDisclaimer={showSavingDisclaimer}
     >
-      <div className="flex flex-col space-y-4">
+      <div className="flex w-full min-w-0 flex-col space-y-4">
         {/* === TEACHER VIEW === */}
         {view === 'teacher' && (
           <>
-            <div className="flex flex-col space-y-1">
+            <div className="flex min-w-0 flex-col space-y-1">
               <label className="text-xs font-semibold text-slate-500">
                 {t('dashboard.assignments.editor.task_editor.number_answer.prompt_label')}
               </label>
@@ -244,12 +272,12 @@ function TaskNumberAnswerObject({
                   'dashboard.assignments.editor.task_editor.number_answer.prompt_placeholder'
                 )}
                 rows={2}
-                className="px-3 py-2 text-sm border border-gray-200 rounded-md bg-white resize-y"
+                className="w-full min-w-0 resize-y rounded-md border border-gray-200 bg-white px-3 py-2 text-sm"
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col space-y-1">
+            <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="flex min-w-0 flex-col space-y-1">
                 <label className="text-xs font-semibold text-slate-500">
                   {t('dashboard.assignments.editor.task_editor.number_answer.correct_value_label')}
                 </label>
@@ -263,10 +291,10 @@ function TaskNumberAnswerObject({
                       correct_value: Number.parseFloat(e.target.value) || 0,
                     }))
                   }
-                  className="px-3 py-1.5 text-sm border border-gray-200 rounded-md bg-white"
+                  className="w-full min-w-0 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm"
                 />
               </div>
-              <div className="flex flex-col space-y-1">
+              <div className="flex min-w-0 flex-col space-y-1">
                 <label className="text-xs font-semibold text-slate-500">
                   {t('dashboard.assignments.editor.task_editor.number_answer.tolerance_label')}
                 </label>
@@ -281,12 +309,12 @@ function TaskNumberAnswerObject({
                       tolerance: Math.max(0, Number.parseFloat(e.target.value) || 0),
                     }))
                   }
-                  className="px-3 py-1.5 text-sm border border-gray-200 rounded-md bg-white"
+                  className="w-full min-w-0 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm"
                 />
               </div>
             </div>
 
-            <div className="flex flex-col space-y-1">
+            <div className="flex min-w-0 flex-col space-y-1">
               <label className="text-xs font-semibold text-slate-500">
                 {t('dashboard.assignments.editor.task_editor.number_answer.unit_label')}
               </label>
@@ -298,14 +326,14 @@ function TaskNumberAnswerObject({
                 placeholder={t(
                   'dashboard.assignments.editor.task_editor.number_answer.unit_placeholder'
                 )}
-                className="px-3 py-1.5 text-sm border border-gray-200 rounded-md bg-white"
+                className="w-full min-w-0 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm"
               />
               <p className="text-[10px] text-slate-400">
                 {t('dashboard.assignments.editor.task_editor.number_answer.unit_hint')}
               </p>
             </div>
 
-            <div className="flex flex-col space-y-1">
+            <div className="flex min-w-0 flex-col space-y-1">
               <label className="text-xs font-semibold text-slate-500">
                 {t('dashboard.assignments.editor.task_editor.number_answer.explanation_label')}
               </label>
@@ -318,13 +346,13 @@ function TaskNumberAnswerObject({
                   'dashboard.assignments.editor.task_editor.number_answer.explanation_placeholder'
                 )}
                 rows={2}
-                className="px-3 py-2 text-sm border border-gray-200 rounded-md bg-white resize-y"
+                className="w-full min-w-0 resize-y rounded-md border border-gray-200 bg-white px-3 py-2 text-sm"
               />
             </div>
 
-            <div className="flex items-center space-x-1.5 text-[11px] text-slate-500 bg-slate-50 rounded-md px-2.5 py-1.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5 rounded-md bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-500">
               <span>{t('dashboard.assignments.editor.task_editor.number_answer.preview_label')}:</span>
-              <span className="font-mono font-semibold text-slate-700">
+              <span className="min-w-0 break-all font-mono font-semibold text-slate-700">
                 {acceptedRange}
               </span>
             </div>
@@ -340,20 +368,20 @@ function TaskNumberAnswerObject({
             {contents.prompt && (
               <p className="text-sm text-slate-700 whitespace-pre-wrap">{contents.prompt}</p>
             )}
-            <div className="flex items-center space-x-2">
+            <div className="flex min-w-0 items-center gap-2">
               <input
                 type="text"
                 inputMode="decimal"
                 value={studentAnswer}
-                onChange={(e) => !submissionIsGraded && setStudentAnswer(e.target.value)}
-                readOnly={submissionIsGraded}
+                onChange={(e) => !submissionIsFinal && setStudentAnswer(e.target.value)}
+                readOnly={submissionIsFinal}
                 placeholder={t(
                   'dashboard.assignments.editor.task_editor.number_answer.your_answer_placeholder'
                 )}
-                className="w-full max-w-[200px] px-3 py-2 text-sm border-2 border-gray-200 rounded-md bg-white focus:border-blue-400 focus:ring-2 focus:ring-blue-200 outline-none font-mono"
+                className="w-full min-w-0 rounded-md border-2 border-gray-200 bg-white px-3 py-2 font-mono text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-200 sm:max-w-[200px]"
               />
               {contents.unit && (
-                <span className="text-sm font-medium text-slate-500">{contents.unit}</span>
+                <span className="min-w-0 break-words text-sm font-medium text-slate-500">{contents.unit}</span>
               )}
             </div>
             {showCorrectAnswers && (

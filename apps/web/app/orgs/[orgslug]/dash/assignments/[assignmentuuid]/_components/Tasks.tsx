@@ -7,18 +7,19 @@ import { useAssignmentsTask, useAssignmentsTaskDispatch } from '@components/Cont
 import { useTranslation } from 'react-i18next';
 import dayjs from 'dayjs'
 import relativeTime from 'dayjs/plugin/relativeTime'
+import { SIMPLE_PILOT_MAX_ASSIGNMENT_TASKS, isAiFallbackStarterTask } from '@lib/simple-pilot-assignments';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 dayjs.extend(relativeTime)
 
 const TASK_TYPE_META: Record<string, { label: string; Icon: React.ComponentType<{ size?: number; className?: string }> }> = {
-    QUIZ: { label: 'Quiz', Icon: ListTodo },
-    FILE_SUBMISSION: { label: 'File upload', Icon: FileUp },
-    FORM: { label: 'Form', Icon: Type },
-    CODE: { label: 'Code', Icon: Code2 },
-    SHORT_ANSWER: { label: 'Short answer', Icon: Pencil },
-    NUMBER_ANSWER: { label: 'Number', Icon: Hash },
+    QUIZ: { label: '選擇題', Icon: ListTodo },
+    FORM: { label: '填空題', Icon: Type },
+    SHORT_ANSWER: { label: '短問答', Icon: Pencil },
+    FILE_SUBMISSION: { label: '檔案提交', Icon: FileUp },
+    CODE: { label: '程式題', Icon: Code2 },
+    NUMBER_ANSWER: { label: '數字題', Icon: Hash },
 }
-
 function stripMarkup(text: string): string {
     if (!text) return ''
     return text
@@ -33,6 +34,10 @@ function AssignmentTasks({ assignment_uuid }: any) {
     const assignmentTask = useAssignmentsTask() as any;
     const assignmentTaskHook = useAssignmentsTaskDispatch() as any;
     const [isNewTaskModalOpen, setIsNewTaskModalOpen] = React.useState(false)
+    const searchParams = useSearchParams()
+    const pathname = usePathname()
+    const router = useRouter()
+    const autoOpenedNewTaskRef = React.useRef(false)
 
     async function setSelectTask(task_uuid: string) {
         assignmentTaskHook({ type: 'setSelectedAssignmentTaskUUID', payload: task_uuid })
@@ -40,10 +45,19 @@ function AssignmentTasks({ assignment_uuid }: any) {
 
     const tasks: any[] = assignments?.assignment_tasks ?? []
 
+    React.useEffect(() => {
+        if (autoOpenedNewTaskRef.current) return
+        if (searchParams.get('newTask') !== '1') return
+        if (!assignments || tasks.length >= SIMPLE_PILOT_MAX_ASSIGNMENT_TASKS) return
+        autoOpenedNewTaskRef.current = true
+        setIsNewTaskModalOpen(true)
+        router.replace(pathname, { scroll: false })
+    }, [assignments, pathname, router, searchParams, tasks.length])
+
     return (
         <div className='flex w-full'>
             <div className='flex flex-col gap-2 w-[272px] mx-auto'>
-                {assignments && tasks.length < 10 && (
+                {assignments && tasks.length < SIMPLE_PILOT_MAX_ASSIGNMENT_TASKS && (
                     <Modal
                         isDialogOpen={isNewTaskModalOpen}
                         onOpenChange={setIsNewTaskModalOpen}
@@ -66,12 +80,18 @@ function AssignmentTasks({ assignment_uuid }: any) {
                     />
                 )}
 
+                {assignments && tasks.length >= SIMPLE_PILOT_MAX_ASSIGNMENT_TASKS && (
+                    <div className='rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs font-semibold leading-relaxed text-amber-800'>
+                        已有 {tasks.length} 題。校內試行建議每份作業最多 {SIMPLE_PILOT_MAX_ASSIGNMENT_TASKS} 題，請建立另一份簡單作業讓學生分次完成。
+                    </div>
+                )}
+
                 {tasks.length > 0 && (
                     <div className='px-1 pt-1 pb-0.5 flex items-center justify-between'>
                         <span className='text-[10px] font-semibold text-gray-400 uppercase tracking-wider'>
-                            {tasks.length} {tasks.length === 1 ? 'task' : 'tasks'}
+                            共 {tasks.length} 題
                         </span>
-                        <span className='text-[10px] font-medium text-gray-300'>newest first</span>
+                        <span className='text-[10px] font-medium text-gray-300'>最新在前</span>
                     </div>
                 )}
 
@@ -83,6 +103,7 @@ function AssignmentTasks({ assignment_uuid }: any) {
                     const createdAt = task.creation_date ? dayjs(task.creation_date) : null
                     const createdLabel = createdAt?.isValid() ? createdAt.fromNow() : null
                     const position = tasks.length - index
+                    const needsTeacherCheck = isAiFallbackStarterTask(task)
 
                     return (
                         <button
@@ -111,13 +132,18 @@ function AssignmentTasks({ assignment_uuid }: any) {
                                             {position}
                                         </span>
                                         <span>{meta.label}</span>
+                                        {needsTeacherCheck && (
+                                            <span className='rounded-full bg-rose-50 px-1.5 py-0.5 text-[9px] font-black text-rose-700'>
+                                                需檢查
+                                            </span>
+                                        )}
                                     </div>
                                     <Icon size={13} className='text-gray-300' />
                                 </div>
 
                                 {/* Title */}
                                 <div className='text-sm font-semibold text-gray-800 leading-snug break-words'>
-                                    {task.title || <span className='text-gray-300 italic font-normal'>Untitled task</span>}
+                                    {task.title || <span className='text-gray-300 italic font-normal'>未命名題目</span>}
                                 </div>
 
                                 {/* Description */}
@@ -134,7 +160,7 @@ function AssignmentTasks({ assignment_uuid }: any) {
                                         <span>{createdLabel ?? '—'}</span>
                                     </div>
                                     {typeof task.max_grade_value === 'number' && task.max_grade_value !== 100 && (
-                                        <span className='font-medium text-gray-500'>out of {task.max_grade_value}</span>
+                                        <span className='font-medium text-gray-500'>滿分 {task.max_grade_value}</span>
                                     )}
                                 </div>
                             </div>
@@ -143,8 +169,22 @@ function AssignmentTasks({ assignment_uuid }: any) {
                 })}
 
                 {tasks.length === 0 && assignments && (
-                    <div className='rounded-xl border border-dashed border-gray-200 bg-gray-50/50 px-4 py-8 text-center'>
-                        <div className='text-xs text-gray-400'>No tasks yet — add one to get started.</div>
+                    <div className='rounded-xl border border-dashed border-cyan-200 bg-cyan-50/70 px-4 py-5 text-center'>
+                        <div className='mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-white text-cyan-700 nice-shadow'>
+                            <ListTodo size={18} />
+                        </div>
+                        <p className='mt-3 text-sm font-black text-gray-950'>先做 3 題簡單作業</p>
+                        <p className='mt-1 text-xs leading-relaxed text-gray-500'>
+                            可用 AI、題庫或手動建立選擇、填空、短問答；學生提交後可自動批改，答錯可以重做。
+                        </p>
+                        <button
+                            type='button'
+                            onClick={() => setIsNewTaskModalOpen(true)}
+                            className='mt-4 inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-cyan-700 px-3 text-xs font-black text-white hover:bg-cyan-800'
+                        >
+                            <Plus size={14} />
+                            新增簡單題
+                        </button>
                     </div>
                 )}
             </div>

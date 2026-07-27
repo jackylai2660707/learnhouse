@@ -240,20 +240,22 @@ function ActivityElement(props: ActivitiyElementProps) {
       draggableId={props.activity.activity_uuid}
       index={props.activityIndex}
     >
-      {(provided, snapshot) => (
-        <div
-          className={`flex items-center gap-3 py-2.5 px-3 my-2 w-full rounded-lg text-gray-500
-            ${snapshot.isDragging
-              ? 'nice-shadow bg-white ring-2 ring-blue-500/20 z-drag-overlay rotate-1 scale-[1.02]'
-              : props.isSelected
-              ? 'nice-shadow bg-blue-50 ring-1 ring-blue-200'
-              : 'nice-shadow bg-white hover:bg-gray-50'
-            }`}
-          key={props.activity.id}
-          {...provided.draggableProps}
-          ref={provided.innerRef}
-          style={{ ...provided.draggableProps.style }}
-        >
+      {(provided, snapshot) => {
+        const { style, ...draggableProps } = provided.draggableProps
+        return (
+          <div
+            className={`flex items-center gap-3 py-2.5 px-3 my-2 w-full rounded-lg text-gray-500
+              ${snapshot.isDragging
+                ? 'nice-shadow bg-white ring-2 ring-blue-500/20 z-drag-overlay rotate-1 scale-[1.02]'
+                : props.isSelected
+                ? 'nice-shadow bg-blue-50 ring-1 ring-blue-200'
+                : 'nice-shadow bg-white hover:bg-gray-50'
+              }`}
+            key={props.activity.id}
+            {...draggableProps}
+            ref={provided.innerRef}
+            style={style as React.CSSProperties}
+          >
           {/* Selection checkbox */}
           <button
             onClick={(e) => { e.stopPropagation(); props.onToggleSelect?.() }}
@@ -497,8 +499,9 @@ function ActivityElement(props: ActivitiyElementProps) {
               <button ref={(el) => { if (deleteModalOpen && el) { el.click(); setDeleteModalOpen(false) } }} className="hidden" />
             }
           />
-        </div>
-      )}
+          </div>
+        )
+      }}
     </Draggable>
   )
 }

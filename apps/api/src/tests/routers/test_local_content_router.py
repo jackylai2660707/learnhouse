@@ -34,6 +34,35 @@ async def client(app):
 
 
 class TestLocalContentRouter:
+    async def test_internal_pdf_build_staging_is_never_served(
+        self, client, app, org
+    ):
+        paths = (
+            "/content/_internal/pdf-builds/pdfbuild_secret/source_0.pdf",
+            "/content/%255finternal/pdf-builds/pdfbuild_secret/source_0.pdf",
+        )
+        identities = (
+            APITokenUser(
+                id=10,
+                org_id=org.id,
+                created_by_user_id=1,
+                token_name="same-org",
+                user_uuid="token_same",
+            ),
+            APITokenUser(
+                id=11,
+                org_id=999,
+                created_by_user_id=2,
+                token_name="cross-org",
+                user_uuid="token_cross",
+            ),
+        )
+        for identity in identities:
+            app.dependency_overrides[get_current_user] = lambda identity=identity: identity
+            for path in paths:
+                assert (await client.get(path)).status_code == 404
+                assert (await client.head(path)).status_code == 404
+
     async def test_get_and_head_local_content_success(
         self, client, db, org, course, admin_user, app, tmp_path
     ):

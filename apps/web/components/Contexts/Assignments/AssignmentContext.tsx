@@ -8,18 +8,42 @@ import { useLHSession } from '@components/Contexts/LHSessionContext'
 
 export const AssignmentContext = createContext({})
 
+function AssignmentLoadState({
+    title,
+    detail,
+    tone = 'neutral',
+}: {
+    title: string
+    detail: string
+    tone?: 'neutral' | 'error'
+}) {
+    const toneClass = tone === 'error'
+        ? 'border-rose-100 bg-rose-50 text-rose-800'
+        : 'border-gray-100 bg-gray-50 text-gray-700'
+
+    return (
+        <div className="flex min-h-[220px] w-full items-center justify-center p-6">
+            <div className={`max-w-md rounded-xl border px-5 py-4 text-center ${toneClass}`}>
+                <p className="text-sm font-black">{title}</p>
+                <p className="mt-1 text-xs font-semibold leading-relaxed opacity-80">{detail}</p>
+            </div>
+        </div>
+    )
+}
+
 export function AssignmentProvider({ children, assignment_uuid }: { children: React.ReactNode, assignment_uuid: string }) {
     const session = useLHSession() as any
     const accessToken = session?.data?.tokens?.access_token
+    const sessionStatus = session?.status
 
-    const { data: assignment, error: assignmentError } = useQuery({
+    const { data: assignment, error: assignmentError, isLoading: assignmentLoading } = useQuery({
         queryKey: queryKeys.assignments.detail(assignment_uuid),
         queryFn: () => apiFetch(`${getAPIUrl()}assignments/${assignment_uuid}`, accessToken),
         enabled: !!(assignment_uuid && accessToken),
         staleTime: 60_000,
     })
 
-    const { data: assignment_tasks, error: assignmentTasksError } = useQuery({
+    const { data: assignment_tasks, error: assignmentTasksError, isLoading: assignmentTasksLoading } = useQuery({
         queryKey: queryKeys.assignments.tasks(assignment_uuid),
         queryFn: () => apiFetch(`${getAPIUrl()}assignments/${assignment_uuid}/tasks`, accessToken),
         enabled: !!(assignment_uuid && accessToken),
@@ -47,9 +71,44 @@ export function AssignmentProvider({ children, assignment_uuid }: { children: Re
         }
     }, [assignment, assignment_tasks])
 
-    if (assignmentError || assignmentTasksError) return <div></div>
+    if (!assignment_uuid) {
+        return (
+            <AssignmentLoadState
+                tone="error"
+                title="找不到作業"
+                detail="這個作業連結不完整，請返回課程或請老師重新提供連結。"
+            />
+        )
+    }
 
-    if (!assignmentsFull) return <div></div>
+    if (assignmentError || assignmentTasksError) {
+        return (
+            <AssignmentLoadState
+                tone="error"
+                title="讀取作業失敗"
+                detail="請重新整理頁面；如果仍然看不到，請聯絡老師確認作業是否已發布。"
+            />
+        )
+    }
+
+    if (!accessToken && sessionStatus !== 'loading') {
+        return (
+            <AssignmentLoadState
+                tone="error"
+                title="請先登入"
+                detail="登入後才可以查看作業、作答和提交。"
+            />
+        )
+    }
+
+    if (!accessToken || assignmentLoading || assignmentTasksLoading || !assignmentsFull) {
+        return (
+            <AssignmentLoadState
+                title="正在載入作業"
+                detail="系統正在讀取題目和提交狀態，請稍候。"
+            />
+        )
+    }
 
     return <AssignmentContext.Provider value={assignmentsFull}>{children}</AssignmentContext.Provider>
 }

@@ -223,16 +223,19 @@ function ChapterElement(props: ChapterElementProps) {
       draggableId={props.chapter.chapter_uuid}
       index={props.chapterIndex}
     >
-      {(provided, snapshot) => (
-        <div
-          className={`mx-2 sm:mx-4 md:mx-6 lg:mx-10 bg-white rounded-xl nice-shadow px-3 sm:px-4 md:px-6 pt-4 sm:pt-6 ${
-            snapshot.isDragging ? 'shadow-xl ring-2 ring-blue-500/20 rotate-1' : ''
-          }`}
-          key={props.chapter.chapter_uuid}
-          {...provided.draggableProps}
-          {...provided.dragHandleProps}
-          ref={provided.innerRef}
-        >
+      {(provided, snapshot) => {
+        const { style, ...draggableProps } = provided.draggableProps
+        return (
+          <div
+            className={`mx-2 sm:mx-4 md:mx-6 lg:mx-10 bg-white rounded-xl nice-shadow px-3 sm:px-4 md:px-6 pt-4 sm:pt-6 ${
+              snapshot.isDragging ? 'shadow-xl ring-2 ring-blue-500/20 rotate-1' : ''
+            }`}
+            key={props.chapter.chapter_uuid}
+            {...draggableProps}
+            {...provided.dragHandleProps}
+            ref={provided.innerRef}
+            style={style as React.CSSProperties}
+          >
           <div className="flex flex-wrap items-center justify-between pb-3">
             <div className="flex grow items-center space-x-2 mb-2 sm:mb-0">
               <div className="bg-neutral-100 rounded-md p-2">
@@ -406,8 +409,9 @@ function ChapterElement(props: ChapterElementProps) {
               <MoreHorizontal size={19} className="text-gray-300 mx-auto" />
             </div>
           </div>
-        </div>
-      )}
+          </div>
+        )
+      }}
     </Draggable>
   )
 }

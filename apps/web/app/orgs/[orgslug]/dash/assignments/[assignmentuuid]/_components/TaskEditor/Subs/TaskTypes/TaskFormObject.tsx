@@ -11,6 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '@/lib/query/keys';
+import { coerceSimplePilotBoolean } from '@lib/simple-pilot-assignments';
 
 type FormSchema = {
     questionText: string;
@@ -19,6 +20,8 @@ type FormSchema = {
         blankUUID?: string;
         placeholder: string;
         correctAnswer: string;
+        correct_answer?: string;
+        answer?: string;
         hint?: string;
     }[];
 };
@@ -39,6 +42,152 @@ type TaskFormObjectProps = {
     user_id?: string;
 };
 
+function responseErrorMessage(response: any, fallback: string) {
+    const detail = response?.data?.detail ?? response?.data?.message ?? response?.detail ?? response?.message;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (detail && typeof detail.message === 'string') return detail.message;
+    if (response instanceof Error && response.message) return response.message;
+    if (typeof response === 'string' && response.trim()) return response;
+    return fallback;
+}
+
+const SIMPLE_TEXT_EDGE_PUNCTUATION = "\"'`.,;:!?()[]{}<>，。；：！？、（）【】《》「」『』“”‘’／/｜|～~";
+const SIMPLE_TEXT_SIMPLIFIED_TO_TRADITIONAL: Record<string, string> = {
+    // Small classroom fallback, not a full OpenCC conversion. It keeps teacher
+    // previews aligned with the backend for common Macau school answers.
+    门: '門',
+    国: '國',
+    语: '語',
+    学: '學',
+    习: '習',
+    数: '數',
+    课: '課',
+    题: '題',
+    问: '問',
+    认: '認',
+    识: '識',
+    义: '義',
+    词: '詞',
+    组: '組',
+    级: '級',
+    读: '讀',
+    写: '寫',
+    听: '聽',
+    说: '說',
+    书: '書',
+    简: '簡',
+    单: '單',
+    对: '對',
+    错: '錯',
+    体: '體',
+    会: '會',
+    复: '復',
+    线: '線',
+    点: '點',
+    电: '電',
+    话: '話',
+    车: '車',
+    马: '馬',
+    鱼: '魚',
+    鸟: '鳥',
+    风: '風',
+    云: '雲',
+    气: '氣',
+    节: '節',
+    时: '時',
+    间: '間',
+    长: '長',
+    历: '歷',
+    汉: '漢',
+    热: '熱',
+    现: '現',
+    这: '這',
+    个: '個',
+    们: '們',
+    为: '為',
+    与: '與',
+    产: '產',
+    业: '業',
+    观: '觀',
+    实: '實',
+    验: '驗',
+    试: '試',
+    证: '證',
+    园: '園',
+    区: '區',
+    东: '東',
+    广: '廣',
+    湾: '灣',
+    岛: '島',
+    桥: '橋',
+    际: '際',
+    币: '幣',
+    纪: '紀',
+    录: '錄',
+    统: '統',
+    计: '計',
+    画: '畫',
+    图: '圖',
+    颜: '顏',
+    关: '關',
+    键: '鍵',
+    练: '練',
+    诗: '詩',
+    乐: '樂',
+    艺: '藝',
+    术: '術',
+    卫: '衛',
+    护: '護',
+    强: '強',
+    难: '難',
+    双: '雙',
+    页: '頁',
+    类: '類',
+    别: '別',
+    动: '動',
+    静: '靜',
+    声: '聲',
+    圆: '圓',
+    边: '邊',
+    积: '積',
+    标: '標',
+    维: '維',
+};
+
+function trimSimpleEdgePunctuation(text: string) {
+    let start = 0;
+    let end = text.length;
+    while (start < end && SIMPLE_TEXT_EDGE_PUNCTUATION.includes(text[start])) start++;
+    while (end > start && SIMPLE_TEXT_EDGE_PUNCTUATION.includes(text[end - 1])) end--;
+    return text.slice(start, end);
+}
+
+function normalizeSimpleTextAnswer(value: unknown) {
+    const normalized = String(value ?? '')
+        .normalize('NFKC')
+        .split('')
+        .map((char) => SIMPLE_TEXT_SIMPLIFIED_TO_TRADITIONAL[char] ?? char)
+        .join('')
+        .replace(/[\u200B-\u200D\uFEFF]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+    return trimSimpleEdgePunctuation(normalized)
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/([\u3400-\u9fff])\s+(?=[\u3400-\u9fff])/g, '$1')
+        .toLocaleLowerCase();
+}
+
+function isCorrectBlankAnswer(studentAnswer: unknown, correctAnswer: unknown) {
+    const normalizedStudentAnswer = normalizeSimpleTextAnswer(studentAnswer);
+    const normalizedCorrectAnswer = normalizeSimpleTextAnswer(correctAnswer);
+    return !!normalizedStudentAnswer && !!normalizedCorrectAnswer && normalizedStudentAnswer === normalizedCorrectAnswer;
+}
+
+function getBlankCorrectAnswer(blank: FormSchema['blanks'][number]) {
+    return blank.correctAnswer ?? blank.correct_answer ?? blank.answer ?? '';
+}
+
 function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectProps) {
     const { t } = useTranslation()
     const session = useLHSession() as any;
@@ -52,12 +201,18 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
     // teacher opted in on the assignment. See TaskQuizObject for the same
     // pattern — keep these consistent across task types.
     const assignmentSubmission = useAssignmentSubmission() as any;
+    const assignmentSubmissionStatus = Array.isArray(assignmentSubmission) && assignmentSubmission.length > 0
+        ? assignmentSubmission[0].submission_status
+        : null;
+    const submissionIsFinal = view === 'student'
+        && !!assignmentSubmissionStatus
+        && !['PENDING', 'NOT_SUBMITTED'].includes(assignmentSubmissionStatus);
     const submissionIsGraded = Array.isArray(assignmentSubmission)
         && assignmentSubmission.length > 0
-        && assignmentSubmission[0].submission_status === 'GRADED';
+        && assignmentSubmissionStatus === 'GRADED';
     const showCorrectAnswers = view === 'student'
         && submissionIsGraded
-        && !!assignment?.assignment_object?.show_correct_answers;
+        && coerceSimplePilotBoolean(assignment?.assignment_object?.show_correct_answers);
 
     // Anti-paste guard for student inputs. Only active when the teacher
     // enabled anti_copy_paste on the assignment AND we're in the student view.
@@ -76,7 +231,7 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
                 questionText: '', 
                 questionUUID: 'question_' + uuidv4(), 
                 blanks: [{ 
-                    placeholder: 'Enter the correct answer', 
+                    placeholder: '填寫答案',
                     correctAnswer: '', 
                     hint: '',
                     blankUUID: 'blank_' + uuidv4() 
@@ -100,7 +255,7 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
     const addBlank = (qIndex: number) => {
         const updatedQuestions = [...questions];
         updatedQuestions[qIndex].blanks.push({ 
-            placeholder: 'Enter the correct answer', 
+            placeholder: '填寫答案',
             correctAnswer: '', 
             hint: '',
             blankUUID: 'blank_' + uuidv4() 
@@ -114,7 +269,7 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
             updatedQuestions[qIndex].blanks.splice(bIndex, 1);
             setQuestions(updatedQuestions);
         } else {
-            toast.error('Cannot delete the last blank. At least one blank is required.');
+            toast.error('至少需要保留一個填空。');
         }
     };
 
@@ -123,7 +278,7 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
             questionText: '', 
             questionUUID: 'question_' + uuidv4(), 
             blanks: [{ 
-                placeholder: 'Enter the correct answer', 
+                placeholder: '填寫答案',
                 correctAnswer: '', 
                 hint: '',
                 blankUUID: 'blank_' + uuidv4() 
@@ -144,15 +299,19 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
                 questions,
             },
         };
-        const res = await updateAssignmentTask(values, assignmentTaskState.assignmentTask.assignment_task_uuid, assignment.assignment_object.assignment_uuid, access_token);
-        if (res) {
-            assignmentTaskStateHook({
-                type: 'reload',
-            });
-            toast.success(t('dashboard.assignments.editor.toasts.task_saved'));
-        } else {
-            console.error('Save error:', res);
-            toast.error(t('dashboard.assignments.editor.toasts.task_save_error'));
+        try {
+            const res = await updateAssignmentTask(values, assignmentTaskState.assignmentTask.assignment_task_uuid, assignment.assignment_object.assignment_uuid, access_token);
+            if (res.success) {
+                assignmentTaskStateHook({
+                    type: 'reload',
+                });
+                queryClient.invalidateQueries({ queryKey: queryKeys.assignments.allCourseAssignments() });
+                toast.success(t('dashboard.assignments.editor.toasts.task_saved'));
+            } else {
+                toast.error(responseErrorMessage(res, t('dashboard.assignments.editor.toasts.task_save_error')));
+            }
+        } catch (error) {
+            toast.error(responseErrorMessage(error, t('dashboard.assignments.editor.toasts.task_save_error')));
         }
     };
 
@@ -210,8 +369,23 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
     };
 
     const submitFC = async () => {
-        if (userSubmissions.submissions.length === 0) {
-            toast.error('Please fill in at least one blank before submitting.');
+        if (submissionIsFinal) {
+            toast.error('這份作業已提交，請按「重做」後再修改答案。');
+            return;
+        }
+        const hasMissingBlankAnswer = questions.some((question) => {
+            if (!question.questionUUID || !Array.isArray(question.blanks) || question.blanks.length === 0) return true;
+            return question.blanks.some((blank) => {
+                const submission = userSubmissions.submissions.find(
+                    (item) => item.questionUUID === question.questionUUID && item.blankUUID === blank.blankUUID
+                );
+                return !String(submission?.answer ?? '').trim();
+            });
+        });
+        if (hasMissingBlankAnswer) {
+            toast.error(t('assignments.save_form_fill_blank_first', {
+                defaultValue: '請先填寫所有空格，再儲存本題。',
+            }));
             return;
         }
 
@@ -222,33 +396,36 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
             task_submission_grade_feedback: '',
         };
 
-        const res = await handleAssignmentTaskSubmission(
-            values,
-            assignmentTaskUUID,
-            assignment.assignment_object.assignment_uuid,
-            access_token
-        );
+        try {
+            const res = await handleAssignmentTaskSubmission(
+                values,
+                assignmentTaskUUID,
+                assignment.assignment_object.assignment_uuid,
+                access_token
+            );
 
-        if (res) {
-            toast.success('Form submitted successfully!');
-            // Update userSubmissions with the returned UUID for future updates
-            const updatedUserSubmissions = {
-                ...userSubmissions,
-                assignment_task_submission_uuid: res.data?.assignment_task_submission_uuid || userSubmissions.assignment_task_submission_uuid
-            };
-            setUserSubmissions(updatedUserSubmissions);
-            setInitialUserSubmissions(updatedUserSubmissions);
-            setShowSavingDisclaimer(false);
-            queryClient.invalidateQueries({ queryKey: queryKeys.assignments.taskSubmission(assignment.assignment_object.assignment_uuid) });
-        } else {
-            console.error('Submission error:', res);
-            toast.error('Error submitting form, please retry later.');
+            if (res.success) {
+                toast.success(t('assignments.task_answer_saved_not_submitted'));
+                // Update userSubmissions with the returned UUID for future updates
+                const updatedUserSubmissions = {
+                    ...userSubmissions,
+                    assignment_task_submission_uuid: res.data?.assignment_task_submission_uuid || userSubmissions.assignment_task_submission_uuid
+                };
+                setUserSubmissions(updatedUserSubmissions);
+                setInitialUserSubmissions(updatedUserSubmissions);
+                setShowSavingDisclaimer(false);
+                queryClient.invalidateQueries({ queryKey: queryKeys.assignments.taskSubmission(assignment.assignment_object.assignment_uuid) });
+            } else {
+                toast.error(responseErrorMessage(res, '提交答案失敗，請稍後再試。'));
+            }
+        } catch (error) {
+            toast.error(responseErrorMessage(error, '提交答案失敗，請稍後再試。'));
         }
     };
 
     const gradeFC = async () => {
         if (!user_id) {
-            toast.error('User ID is required for grading.');
+            toast.error('找不到學生資料，無法批改。');
             return;
         }
 
@@ -262,7 +439,7 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
                 const userAnswer = userSubmissions.submissions.find(
                     (submission) => submission.questionUUID === question.questionUUID && submission.blankUUID === blank.blankUUID
                 );
-                if (userAnswer && userAnswer.answer.toLowerCase().trim() === blank.correctAnswer.toLowerCase().trim()) {
+                if (userAnswer && isCorrectBlankAnswer(userAnswer.answer, getBlankCorrectAnswer(blank))) {
                     correctAnswers++;
                 }
             });
@@ -276,15 +453,19 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
             assignment_task_submission_uuid: userSubmissions.assignment_task_submission_uuid,
             task_submission: userSubmissions,
             grade: finalGrade,
-            task_submission_grade_feedback: 'Auto graded by system',
+            task_submission_grade_feedback: '系統自動批改',
         };
 
-        const res = await handleAssignmentTaskSubmission(values, assignmentTaskUUID, assignment.assignment_object.assignment_uuid, access_token);
-        if (res) {
-            getAssignmentTaskSubmissionFromIdentifiedUserUI();
-            toast.success(`Task graded successfully with ${finalGrade} points (${correctAnswers}/${totalBlanks} correct)`);
-        } else {
-            toast.error('Error grading task, please retry later.');
+        try {
+            const res = await handleAssignmentTaskSubmission(values, assignmentTaskUUID, assignment.assignment_object.assignment_uuid, access_token);
+            if (res.success) {
+                getAssignmentTaskSubmissionFromIdentifiedUserUI();
+                toast.success(`已自動批改：${finalGrade} 分（${correctAnswers}/${totalBlanks} 正確）`);
+            } else {
+                toast.error(responseErrorMessage(res, '批改失敗，請稍後再試。'));
+            }
+        } catch (error) {
+            toast.error(responseErrorMessage(error, '批改失敗，請稍後再試。'));
         }
     };
 
@@ -351,6 +532,13 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
                     ...sub.task_submission,
                     assignment_task_submission_uuid: sub.assignment_task_submission_uuid,
                 });
+            } else if (taskSubmissionsMap !== null) {
+                const emptySubmission = {
+                    questions: [],
+                    submissions: [],
+                };
+                setUserSubmissions(emptySubmission);
+                setInitialUserSubmissions(emptySubmission);
             }
         };
 
@@ -386,21 +574,24 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
         }
     }, [userSubmissions, initialUserSubmissions]);
 
-    // Ensure questions is always an array for teacher view
-    if (view === 'teacher' && (!questions || questions.length === 0)) {
+    useEffect(() => {
+        if (view !== 'teacher' || (questions && questions.length > 0)) return;
         setQuestions([
             { 
                 questionText: '', 
                 questionUUID: 'question_' + uuidv4(), 
                 blanks: [{ 
-                    placeholder: 'Enter the correct answer', 
-                    correctAnswer: '', 
+                    placeholder: '填寫答案',
+                    correctAnswer: '',
                     hint: '',
-                    blankUUID: 'blank_' + uuidv4() 
+                    blankUUID: 'blank_' + uuidv4()
                 }] 
             },
         ]);
-        return null; // Return null to prevent rendering while state updates
+    }, [view, questions]);
+
+    if (view === 'teacher' && (!questions || questions.length === 0)) {
+        return null;
     }
 
     if (view === 'teacher' || (questions && questions.length > 0)) {
@@ -417,31 +608,31 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
             >
                 {view === 'grading' && (
                     <div className="mb-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200">
-                        <h3 className="text-sm font-semibold text-gray-800 mb-2">Submission Summary</h3>
+                        <h3 className="text-sm font-semibold text-gray-800 mb-2">提交摘要</h3>
                         <div className="grid grid-cols-3 gap-4 text-sm">
                             <div className="text-center">
                                 <div className="text-lg font-bold text-blue-600">
                                     {questions.flatMap(q => q.blanks).length}
                                 </div>
-                                <div className="text-gray-600">Total Blanks</div>
+                                <div className="text-gray-600">填空數</div>
                             </div>
                             <div className="text-center">
                                 <div className="text-lg font-bold text-green-600">
                                     {questions.flatMap(q => q.blanks).filter(blank => {
                                         const userAnswer = userSubmissions.submissions.find(s => s.blankUUID === blank.blankUUID);
-                                        return userAnswer && userAnswer.answer.toLowerCase().trim() === blank.correctAnswer.toLowerCase().trim();
+                                        return userAnswer && isCorrectBlankAnswer(userAnswer.answer, getBlankCorrectAnswer(blank));
                                     }).length}
                                 </div>
-                                <div className="text-gray-600">Correct</div>
+                                <div className="text-gray-600">正確</div>
                             </div>
                             <div className="text-center">
                                 <div className="text-lg font-bold text-red-600">
                                     {questions.flatMap(q => q.blanks).length - questions.flatMap(q => q.blanks).filter(blank => {
                                         const userAnswer = userSubmissions.submissions.find(s => s.blankUUID === blank.blankUUID);
-                                        return userAnswer && userAnswer.answer.toLowerCase().trim() === blank.correctAnswer.toLowerCase().trim();
+                                        return userAnswer && isCorrectBlankAnswer(userAnswer.answer, getBlankCorrectAnswer(blank));
                                     }).length}
                                 </div>
-                                <div className="text-gray-600">Incorrect</div>
+                                <div className="text-gray-600">錯誤</div>
                             </div>
                         </div>
                     </div>
@@ -454,7 +645,7 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
                                     <input
                                         value={question.questionText}
                                         onChange={(e) => handleQuestionChange(qIndex, e.target.value)}
-                                        placeholder="Enter your question with blanks (use ___ for blanks)"
+                                        placeholder="輸入題目，可用 ___ 表示填空位置"
                                         className="w-full px-3 text-neutral-600 bg-[#00008b00] border-2 border-gray-200 rounded-md border-dotted text-sm font-bold"
                                     />
                                 ) : (
@@ -485,13 +676,13 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
                                                     <input
                                                         value={blank.placeholder}
                                                         onChange={(e) => handleBlankChange(qIndex, bIndex, 'placeholder', e.target.value)}
-                                                        placeholder="Placeholder text for the blank"
+                                                        placeholder="學生看到的提示文字"
                                                         className="w-full mx-2 px-3 pr-6 text-neutral-600 bg-[#00008b00] border-2 border-gray-200 rounded-md border-dotted text-sm font-bold"
                                                     />
                                                     <input
-                                                        value={blank.correctAnswer}
+                                                        value={getBlankCorrectAnswer(blank)}
                                                         onChange={(e) => handleBlankChange(qIndex, bIndex, 'correctAnswer', e.target.value)}
-                                                        placeholder="Correct answer"
+                                                        placeholder="正確答案"
                                                         className="w-full mx-2 px-3 pr-6 text-neutral-600 bg-lime-50 border-2 border-lime-200 rounded-md border-dotted text-sm font-bold"
                                                     />
                                                     <input
@@ -513,7 +704,7 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
                                                         />
                                                     </div>
                                                     <div className="mx-2 text-xs text-gray-600">
-                                                        <span className="font-semibold">Expected:</span> {blank.correctAnswer}
+                                                        <span className="font-semibold">正確答案：</span> {getBlankCorrectAnswer(blank)}
                                                     </div>
                                                     {blank.hint && (
                                                         <div className="mx-2 text-xs text-blue-600 italic">💡 {blank.hint}</div>
@@ -525,10 +716,10 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
                                                         value={userSubmissions.submissions?.find(
                                                             (submission) => submission.questionUUID === question.questionUUID && submission.blankUUID === blank.blankUUID
                                                         )?.answer || ''}
-                                                        onChange={(e) => !submissionIsGraded && handleUserAnswerChange(question.questionUUID!, blank.blankUUID!, e.target.value)}
-                                                        onBlur={(e) => !submissionIsGraded && handleUserAnswerBlur(question.questionUUID!, blank.blankUUID!, e.target.value)}
+                                                        onChange={(e) => !submissionIsFinal && handleUserAnswerChange(question.questionUUID!, blank.blankUUID!, e.target.value)}
+                                                        onBlur={(e) => !submissionIsFinal && handleUserAnswerBlur(question.questionUUID!, blank.blankUUID!, e.target.value)}
                                                         onPaste={handlePaste}
-                                                        readOnly={submissionIsGraded}
+                                                        readOnly={submissionIsFinal}
                                                         placeholder={blank.placeholder}
                                                         data-blank-id={blank.blankUUID}
                                                         className="w-full mx-2 px-3 pr-6 text-neutral-600 bg-[#00008b00] border-2 border-gray-200 rounded-md focus:border-blue-400 focus:ring-2 focus:ring-blue-200 text-sm font-bold transition-all"
@@ -537,7 +728,7 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
                                                         <div className="mx-2 text-xs text-emerald-700 bg-emerald-50 px-2 py-1 rounded-md inline-flex items-center space-x-1 w-fit">
                                                             <Check size={11} />
                                                             <span className="font-semibold">{t('assignments.form.expected_answer')}:</span>
-                                                            <span>{blank.correctAnswer}</span>
+                                                            <span>{getBlankCorrectAnswer(blank)}</span>
                                                         </div>
                                                     )}
                                                     {blank.hint && (
@@ -557,21 +748,31 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
                                                 <div className={`w-fit flex-none flex text-xs px-2 py-0.5 space-x-1 items-center h-fit rounded-lg ${
                                                     userSubmissions.submissions.find(
                                                         (submission) => submission.questionUUID === question.questionUUID && submission.blankUUID === blank.blankUUID
-                                                    )?.answer?.toLowerCase().trim() === blank.correctAnswer.toLowerCase().trim()
+                                                    ) && isCorrectBlankAnswer(
+                                                        userSubmissions.submissions.find(
+                                                            (submission) => submission.questionUUID === question.questionUUID && submission.blankUUID === blank.blankUUID
+                                                        )?.answer,
+                                                        getBlankCorrectAnswer(blank)
+                                                    )
                                                         ? 'bg-lime-200 text-lime-600'
                                                         : 'bg-rose-200/60 text-rose-500'
                                                 } text-sm`}>
                                                     {userSubmissions.submissions.find(
                                                         (submission) => submission.questionUUID === question.questionUUID && submission.blankUUID === blank.blankUUID
-                                                    )?.answer?.toLowerCase().trim() === blank.correctAnswer.toLowerCase().trim() ? (
+                                                    ) && isCorrectBlankAnswer(
+                                                        userSubmissions.submissions.find(
+                                                            (submission) => submission.questionUUID === question.questionUUID && submission.blankUUID === blank.blankUUID
+                                                        )?.answer,
+                                                        getBlankCorrectAnswer(blank)
+                                                    ) ? (
                                                         <>
                                                             <Check size={12} className="mx-auto" />
-                                                            <p className="mx-auto font-bold text-xs">Correct</p>
+                                                            <p className="mx-auto font-bold text-xs">正確</p>
                                                         </>
                                                     ) : (
                                                         <>
                                                             <X size={12} className="mx-auto" />
-                                                            <p className="mx-auto font-bold text-xs">Incorrect</p>
+                                                            <p className="mx-auto font-bold text-xs">錯誤</p>
                                                         </>
                                                     )}
                                                 </div>
@@ -618,7 +819,7 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
                             onClick={addQuestion}
                         >
                             <PlusCircle size={14} className="inline-block" />
-                            <span>Add Question</span>
+                            <span>新增題目</span>
                         </div>
                     </div>
                 )}
@@ -629,9 +830,9 @@ function TaskFormObject({ view, assignmentTaskUUID, user_id }: TaskFormObjectPro
     return (
         <div className='flex flex-row space-x-2 text-sm items-center'>
             <Info size={12} />
-            <p>No questions found</p>
+            <p>暫時沒有題目</p>
         </div>
     );
 }
 
-export default TaskFormObject; 
+export default TaskFormObject;

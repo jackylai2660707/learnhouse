@@ -140,8 +140,12 @@ export async function getActivityWithAuthHeader(
   next: any,
   access_token: string | null | undefined
 ) {
+  const activityId = String(activity_uuid || '')
+  const endpoint = /^\d+$/.test(activityId)
+    ? `${getAPIUrl()}activities/id/${activityId}`
+    : `${getAPIUrl()}activities/${activityId.startsWith('activity_') ? activityId : `activity_${activityId}`}`
   const result = await fetch(
-    `${getAPIUrl()}activities/activity_${activity_uuid}`,
+    endpoint,
     RequestBodyWithAuthHeader('GET', null, next, access_token || undefined)
   )
   const res = await result.json()

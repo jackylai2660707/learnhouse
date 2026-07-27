@@ -14,12 +14,15 @@ import {
   handleAssignmentTaskSubmission,
   updateAssignmentTask,
 } from '@services/courses/assignments'
+import { queryKeys } from '@/lib/query/keys'
 import { CheckCircle2, Plus, X, XCircle } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import React, { useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
 import { useTranslation } from 'react-i18next'
+import { coerceSimplePilotBoolean } from '@lib/simple-pilot-assignments'
 
-type MatchMode = 'exact' | 'case_insensitive' | 'contains' | 'regex'
+type MatchMode = 'exact' | 'case_insensitive'
 
 type ShortAnswerContents = {
   prompt: string
@@ -46,16 +49,47 @@ const DEFAULT_CONTENTS: ShortAnswerContents = {
 // tamper with the grade via DevTools and so the "save draft" pattern works
 // (save repeatedly without giving away whether the answer is correct).
 
+function normalizeAnswerList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((answer) => String(answer ?? '')).filter((answer) => answer.trim().length > 0)
+  }
+  if (typeof value === 'string' && value.trim()) {
+    return [value]
+  }
+  return []
+}
+
 function normalizeContents(raw: any): ShortAnswerContents {
+  const allowedMatchModes = new Set<MatchMode>(['exact', 'case_insensitive'])
+  const matchMode = allowedMatchModes.has(raw?.match_mode)
+    ? raw.match_mode
+    : 'case_insensitive'
+  const answerCandidates = [
+    raw?.correct_answers,
+    raw?.accepted_answers,
+    raw?.correctAnswer,
+    raw?.correct_answer,
+    raw?.answer,
+  ]
+  const answers = answerCandidates
+    .map(normalizeAnswerList)
+    .find((items) => items.length > 0)
+
   return {
     prompt: raw?.prompt ?? '',
-    correct_answers:
-      Array.isArray(raw?.correct_answers) && raw.correct_answers.length > 0
-        ? raw.correct_answers
-        : [''],
-    match_mode: (raw?.match_mode as MatchMode) ?? 'case_insensitive',
+    correct_answers: answers ?? [''],
+    match_mode: matchMode,
     explanation: raw?.explanation ?? '',
   }
+}
+
+function responseErrorMessage(response: any, fallback: string) {
+  const detail = response?.data?.detail ?? response?.data?.message ?? response?.detail ?? response?.message
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (detail && typeof detail.message === 'string') return detail.message
+  if (response instanceof Error && response.message) return response.message
+  if (Array.isArray(detail)) return detail.map((item) => item?.msg || String(item)).join('；')
+  return fallback
 }
 
 function TaskShortAnswerObject({
@@ -69,16 +103,27 @@ function TaskShortAnswerObject({
   const assignmentTaskState = useAssignmentsTask() as any
   const assignmentTaskStateHook = useAssignmentsTaskDispatch() as any
   const assignment = useAssignments() as any
+  const queryClient = useQueryClient()
   // Student-only reveal: after the submission is GRADED and the teacher
   // opted into showing correct answers, inline the accepted answer list
   // next to the student's input.
   const assignmentSubmission = useAssignmentSubmission() as any
+  const assignmentSubmissionStatus = Array.isArray(assignmentSubmission) && assignmentSubmission.length > 0
+    ? assignmentSubmission[0].submission_status
+    : null
+  const assignmentAttemptNumber = Array.isArray(assignmentSubmission) && assignmentSubmission.length > 0
+    ? assignmentSubmission[0].attempt_number
+    : null
+  const submissionIsFinal = view === 'student'
+    && Array.isArray(assignmentSubmission)
+    && assignmentSubmission.length > 0
+    && !['PENDING', 'NOT_SUBMITTED'].includes(assignmentSubmissionStatus || '')
   const submissionIsGraded = Array.isArray(assignmentSubmission)
     && assignmentSubmission.length > 0
-    && assignmentSubmission[0].submission_status === 'GRADED'
+    && assignmentSubmissionStatus === 'GRADED'
   const showCorrectAnswers = view === 'student'
     && submissionIsGraded
-    && !!assignment?.assignment_object?.show_correct_answers
+    && coerceSimplePilotBoolean(assignment?.assignment_object?.show_correct_answers)
 
   const [contents, setContents] = useState<ShortAnswerContents>(DEFAULT_CONTENTS)
   const [studentAnswer, setStudentAnswer] = useState<string>('')
@@ -94,7 +139,14 @@ function TaskShortAnswerObject({
   useEffect(() => {
     if (view === 'teacher' && assignmentTaskState?.assignmentTask?.contents) {
       const c = assignmentTaskState.assignmentTask.contents
-      if (c.prompt !== undefined || Array.isArray(c.correct_answers)) {
+      if (
+        c.prompt !== undefined
+        || Array.isArray(c.correct_answers)
+        || Array.isArray(c.accepted_answers)
+        || c.correctAnswer !== undefined
+        || c.correct_answer !== undefined
+        || c.answer !== undefined
+      ) {
         setContents(normalizeContents(c))
       }
     }
@@ -124,6 +176,11 @@ function TaskShortAnswerObject({
       const saved = res.data.task_submission?.answer ?? ''
       setStudentAnswer(saved)
       setInitialAnswer(saved)
+    } else {
+      setUserSubmissions(null)
+      setStudentAnswer('')
+      setInitialAnswer('')
+      setShowSavingDisclaimer(false)
     }
   }
 
@@ -152,7 +209,7 @@ function TaskShortAnswerObject({
       loadTaskDefinition()
       loadUserSubmission()
     }
-  }, [view, assignmentTaskUUID, assignment, access_token])
+  }, [view, assignmentTaskUUID, assignment, access_token, assignmentSubmissionStatus, assignmentAttemptNumber])
 
   useEffect(() => {
     if (view === 'student') {
@@ -176,17 +233,22 @@ function TaskShortAnswerObject({
       ...contents,
       correct_answers: cleanedAnswers,
     }
-    const res = await updateAssignmentTask(
-      { contents: updatedContents },
-      assignmentTaskState.assignmentTask.assignment_task_uuid,
-      assignment.assignment_object.assignment_uuid,
-      access_token
-    )
-    if (res.success) {
-      assignmentTaskStateHook({ type: 'reload' })
-      toast.success(t('dashboard.assignments.editor.toasts.task_updated'))
-    } else {
-      toast.error(t('dashboard.assignments.editor.toasts.task_update_error'))
+    try {
+      const res = await updateAssignmentTask(
+        { contents: updatedContents },
+        assignmentTaskState.assignmentTask.assignment_task_uuid,
+        assignment.assignment_object.assignment_uuid,
+        access_token
+      )
+      if (res.success) {
+        assignmentTaskStateHook({ type: 'reload' })
+        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.allCourseAssignments() })
+        toast.success(t('dashboard.assignments.editor.toasts.task_updated'))
+      } else {
+        toast.error(responseErrorMessage(res, t('dashboard.assignments.editor.toasts.task_update_error')))
+      }
+    } catch (error) {
+      toast.error(responseErrorMessage(error, t('dashboard.assignments.editor.toasts.task_update_error')))
     }
   }
 
@@ -201,6 +263,16 @@ function TaskShortAnswerObject({
   // from the stored answer no matter what the client sends).
   async function submitFC() {
     if (!assignmentTaskUUID) return
+    if (submissionIsFinal) {
+      toast.error('這份作業已提交，請按「重做」後再修改答案。')
+      return
+    }
+    if (!studentAnswer.trim()) {
+      toast.error(t('assignments.save_short_answer_first', {
+        defaultValue: '請先輸入答案，再儲存本題。',
+      }))
+      return
+    }
     const values = {
       assignment_task_submission_uuid:
         userSubmissions?.assignment_task_submission_uuid || null,
@@ -210,19 +282,26 @@ function TaskShortAnswerObject({
       grade: 0,
       task_submission_grade_feedback: '',
     }
-    const res = await handleAssignmentTaskSubmission(
-      values,
-      assignmentTaskUUID,
-      assignment.assignment_object.assignment_uuid,
-      access_token
-    )
-    if (res.success) {
-      setUserSubmissions(res.data)
-      setInitialAnswer(studentAnswer)
-      setShowSavingDisclaimer(false)
-      toast.success(t('dashboard.assignments.editor.toasts.task_saved'))
-    } else {
-      toast.error(t('dashboard.assignments.editor.toasts.task_save_error'))
+    try {
+      const res = await handleAssignmentTaskSubmission(
+        values,
+        assignmentTaskUUID,
+        assignment.assignment_object.assignment_uuid,
+        access_token
+      )
+      if (res.success) {
+        setUserSubmissions(res.data)
+        setInitialAnswer(studentAnswer)
+        setShowSavingDisclaimer(false)
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.assignments.taskSubmission(assignment.assignment_object.assignment_uuid),
+        })
+        toast.success(t('assignments.task_answer_saved_not_submitted'))
+      } else {
+        toast.error(responseErrorMessage(res, t('dashboard.assignments.editor.toasts.task_save_error')))
+      }
+    } catch (error) {
+      toast.error(responseErrorMessage(error, t('dashboard.assignments.editor.toasts.task_save_error')))
     }
   }
 
@@ -253,7 +332,7 @@ function TaskShortAnswerObject({
 
   return (
     <AssignmentBoxUI
-      type="form"
+      type="short-answer"
       view={view}
       saveFC={saveFC}
       submitFC={submitFC}
@@ -304,12 +383,6 @@ function TaskShortAnswerObject({
                 </option>
                 <option value="exact">
                   {t('dashboard.assignments.editor.task_editor.short_answer.match_modes.exact')}
-                </option>
-                <option value="contains">
-                  {t('dashboard.assignments.editor.task_editor.short_answer.match_modes.contains')}
-                </option>
-                <option value="regex">
-                  {t('dashboard.assignments.editor.task_editor.short_answer.match_modes.regex')}
                 </option>
               </select>
             </div>
@@ -381,8 +454,8 @@ function TaskShortAnswerObject({
             )}
             <input
               value={studentAnswer}
-              onChange={(e) => !submissionIsGraded && setStudentAnswer(e.target.value)}
-              readOnly={submissionIsGraded}
+              onChange={(e) => !submissionIsFinal && setStudentAnswer(e.target.value)}
+              readOnly={submissionIsFinal}
               placeholder={t(
                 'dashboard.assignments.editor.task_editor.short_answer.your_answer_placeholder'
               )}

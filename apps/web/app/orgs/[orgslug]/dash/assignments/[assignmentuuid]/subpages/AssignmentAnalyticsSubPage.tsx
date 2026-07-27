@@ -794,7 +794,7 @@ function formatGradeValue(pct: number, gradingType?: string): { primary: string;
         case 'PERCENTAGE':
             return { primary: `${rounded}%` };
         case 'PASS_FAIL':
-            return { primary: pct >= 60 ? 'Pass' : 'Fail', secondary: `${rounded}%` };
+            return { primary: pct >= 50 ? '通過' : '未通過', secondary: `${rounded}%` };
         case 'GPA_SCALE':
             return { primary: pctToGpa(pct), secondary: `${rounded}%` };
         case 'NUMERIC':

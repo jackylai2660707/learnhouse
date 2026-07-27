@@ -8,7 +8,7 @@ import {
 } from '@services/courses/activities'
 import { getOrganizationContextInfoWithoutCredentials } from '@services/organizations/orgs'
 import { revalidateTags } from '@services/utils/ts/requests'
-import { Layers } from 'lucide-react'
+import { Backpack, Layers } from 'lucide-react'
 import { ArrowLeft } from '@phosphor-icons/react'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
 import { useRouter } from 'next/navigation'
@@ -37,6 +37,11 @@ function NewActivityButton(props: NewActivityButtonProps) {
 
   const openNewActivityModal = async (chapterId: any) => {
     setSelectedView('home')
+    setNewActivityModal(true)
+  }
+
+  const openAssignmentModal = async () => {
+    setSelectedView('assignments')
     setNewActivityModal(true)
   }
 
@@ -115,7 +120,7 @@ function NewActivityButton(props: NewActivityButtonProps) {
   )
 
   return (
-    <div className="flex justify-center">
+    <div className="flex flex-col items-center justify-center gap-2">
       <Modal
         isDialogOpen={newActivityModal}
         onOpenChange={setNewActivityModal}
@@ -138,16 +143,30 @@ function NewActivityButton(props: NewActivityButtonProps) {
         dialogTitle={dialogTitle}
         dialogDescription={selectedView === 'home' ? t('dashboard.courses.structure.modals.new_activity.description') : undefined}
       />
-      <div
-        onClick={() => {
-          openNewActivityModal(props.chapterId)
-        }}
-        className="flex w-44 h-10 items-center justify-center py-2 my-3 rounded-xl text-white bg-black hover:cursor-pointer"
-      >
-        <Layers size={17} />
-        <div className="text-sm font-bold ml-2">
-          {t('dashboard.courses.structure.actions.add_activity')}
-        </div>
+      <div className="my-3 flex flex-col items-center gap-2 sm:flex-row">
+        <button
+          type="button"
+          onClick={openAssignmentModal}
+          className="flex h-10 w-44 items-center justify-center rounded-xl bg-gray-950 px-3 py-2 text-white hover:bg-black"
+        >
+          <Backpack size={17} />
+          <span className="ml-2 text-sm font-bold">新增簡單作業</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            openNewActivityModal(props.chapterId)
+          }}
+          className="flex h-10 w-36 items-center justify-center rounded-xl border border-gray-200 bg-white px-3 py-2 text-gray-700 hover:bg-gray-50"
+        >
+          <Layers size={17} />
+          <span className="ml-2 text-sm font-bold">
+            {t('dashboard.courses.structure.actions.add_activity')}
+          </span>
+        </button>
+      </div>
+      <div className="max-w-sm px-3 text-center text-[11px] font-semibold leading-relaxed text-gray-400">
+        校內試行建議先建立 3 題選擇、填空、短問答，學生提交後即可自動批改。
       </div>
     </div>
   )

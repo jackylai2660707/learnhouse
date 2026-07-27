@@ -1,5 +1,5 @@
 import { useAssignments } from '@components/Contexts/Assignments/AssignmentContext';
-import { useAssignmentTaskSubmissions } from '@components/Contexts/Assignments/AssignmentSubmissionContext';
+import { useAssignmentSubmission, useAssignmentTaskSubmissions } from '@components/Contexts/Assignments/AssignmentSubmissionContext';
 import { useAssignmentsTaskDispatch } from '@components/Contexts/Assignments/AssignmentsTaskContext';
 import { useLHSession } from '@components/Contexts/LHSessionContext';
 import { useOrg } from '@components/Contexts/OrgContext';
@@ -25,6 +25,16 @@ type TaskFileObjectProps = {
     user_id?: string;
 };
 
+function responseErrorMessage(response: any, fallback: string) {
+    const detail = response?.data?.detail ?? response?.data?.message ?? response?.detail ?? response?.message;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (detail && typeof detail.message === 'string') return detail.message;
+    if (response instanceof Error && response.message) return response.message;
+    if (Array.isArray(detail)) return detail.map((item) => item?.msg || String(item)).join('；');
+    if (typeof response === 'string' && response.trim()) return response;
+    return fallback;
+}
+
 export default function TaskFileObject({ view, user_id, assignmentTaskUUID }: TaskFileObjectProps) {
     const { t } = useTranslation()
     const session = useLHSession() as any;
@@ -36,8 +46,15 @@ export default function TaskFileObject({ view, user_id, assignmentTaskUUID }: Ta
     const [assignmentTask, setAssignmentTask] = React.useState<any>(null);
     const assignmentTaskStateHook = useAssignmentsTaskDispatch() as any;
     const assignment = useAssignments() as any;
+    const assignmentSubmission = useAssignmentSubmission() as any;
     const taskSubmissionsMap = useAssignmentTaskSubmissions();
     const queryClient = useQueryClient();
+    const assignmentSubmissionStatus = Array.isArray(assignmentSubmission) && assignmentSubmission.length > 0
+        ? assignmentSubmission[0].submission_status
+        : null;
+    const submissionIsFinal = view === 'student'
+        && !!assignmentSubmissionStatus
+        && !['PENDING', 'NOT_SUBMITTED'].includes(assignmentSubmissionStatus);
 
     /* TEACHER VIEW CODE */
     /* TEACHER VIEW CODE */
@@ -57,32 +74,44 @@ export default function TaskFileObject({ view, user_id, assignmentTaskUUID }: Ta
             setError(t('dashboard.assignments.editor.task_editor.general.auth_required'));
             return;
         }
+        if (submissionIsFinal) {
+            setError('這份作業已提交，請按「重做」後再更換檔案。');
+            return;
+        }
 
         const file = event.target.files[0]
+        if (!file) {
+            return;
+        }
 
         setLocalUploadFile(file)
         setIsLoading(true)
-        const res = await updateSubFile(
-            file,
-            assignmentTask.assignment_task_uuid,
-            assignment.assignment_object.assignment_uuid,
-            access_token
-        )
+        try {
+            const res = await updateSubFile(
+                file,
+                assignmentTask.assignment_task_uuid,
+                assignment.assignment_object.assignment_uuid,
+                access_token
+            )
 
-        // wait for 1 second to show loading animation
-        await new Promise((r) => setTimeout(r, 1500))
-        if (res.success === false) {
-            setError(res.data.detail)
+            // wait for 1 second to show loading animation
+            await new Promise((r) => setTimeout(r, 1500))
+            if (res?.success) {
+                assignmentTaskStateHook({ type: 'reload' })
+                setUserSubmissions({
+                    fileUUID: res.data.file_uuid,
+                    assignment_task_submission_uuid: res.data.assignment_task_submission_uuid
+                })
+                queryClient.invalidateQueries({ queryKey: queryKeys.assignments.taskSubmission(assignment.assignment_object.assignment_uuid) });
+                setIsLoading(false)
+                setError('')
+            } else {
+                setError(responseErrorMessage(res, '上傳失敗，請稍後再試。'))
+                setIsLoading(false)
+            }
+        } catch (error) {
+            setError(responseErrorMessage(error, '上傳失敗，請稍後再試。'))
             setIsLoading(false)
-        } else {
-            assignmentTaskStateHook({ type: 'reload' })
-            setUserSubmissions({
-                fileUUID: res.data.file_uuid,
-                assignment_task_submission_uuid: res.data.assignment_task_submission_uuid
-            })
-            queryClient.invalidateQueries({ queryKey: queryKeys.assignments.taskSubmission(assignment.assignment_object.assignment_uuid) });
-            setIsLoading(false)
-            setError('')
         }
     }
 
@@ -109,6 +138,10 @@ export default function TaskFileObject({ view, user_id, assignmentTaskUUID }: Ta
             toast.error(t('dashboard.assignments.editor.task_editor.general.auth_required_submit'));
             return;
         }
+        if (submissionIsFinal) {
+            toast.error('這份作業已提交，請按「重做」後再更換檔案。');
+            return;
+        }
 
         // Save the file submission to the server
         const values = {
@@ -118,23 +151,27 @@ export default function TaskFileObject({ view, user_id, assignmentTaskUUID }: Ta
             task_submission_grade_feedback: '',
         };
         if (assignmentTaskUUID) {
-            const res = await handleAssignmentTaskSubmission(values, assignmentTaskUUID, assignment.assignment_object.assignment_uuid, access_token);
-            if (res) {
-                assignmentTaskStateHook({
-                    type: 'reload',
-                });
-                toast.success(t('dashboard.assignments.editor.toasts.task_saved'));
-                setShowSavingDisclaimer(false);
-                // Update userSubmissions with the returned UUID for future updates
-                const updatedUserSubmissions = {
-                    ...userSubmissions,
-                    assignment_task_submission_uuid: res.data?.assignment_task_submission_uuid || userSubmissions.assignment_task_submission_uuid
-                };
-                setUserSubmissions(updatedUserSubmissions);
-                setInitialUserSubmissions(updatedUserSubmissions);
-                queryClient.invalidateQueries({ queryKey: queryKeys.assignments.taskSubmission(assignment.assignment_object.assignment_uuid) });
-            } else {
-                toast.error(t('dashboard.assignments.editor.toasts.task_save_error'));
+            try {
+                const res = await handleAssignmentTaskSubmission(values, assignmentTaskUUID, assignment.assignment_object.assignment_uuid, access_token);
+                if (res?.success) {
+                    assignmentTaskStateHook({
+                        type: 'reload',
+                    });
+                    toast.success(t('assignments.task_answer_saved_not_submitted'));
+                    setShowSavingDisclaimer(false);
+                    // Update userSubmissions with the returned UUID for future updates
+                    const updatedUserSubmissions = {
+                        ...userSubmissions,
+                        assignment_task_submission_uuid: res.data?.assignment_task_submission_uuid || userSubmissions.assignment_task_submission_uuid
+                    };
+                    setUserSubmissions(updatedUserSubmissions);
+                    setInitialUserSubmissions(updatedUserSubmissions);
+                    queryClient.invalidateQueries({ queryKey: queryKeys.assignments.taskSubmission(assignment.assignment_object.assignment_uuid) });
+                } else {
+                    toast.error(responseErrorMessage(res, t('dashboard.assignments.editor.toasts.task_save_error')));
+                }
+            } catch (error) {
+                toast.error(responseErrorMessage(error, t('dashboard.assignments.editor.toasts.task_save_error')));
             }
         }
     };
@@ -203,7 +240,7 @@ export default function TaskFileObject({ view, user_id, assignmentTaskUUID }: Ta
     async function gradeCustomFC(grade: number) {
         if (assignmentTaskUUID) {
             if (grade > assignmentTaskOutsideProvider.max_grade_value) {
-                toast.error(`Grade cannot be more than ${assignmentTaskOutsideProvider.max_grade_value} points`);
+                toast.error(`分數不能超過 ${assignmentTaskOutsideProvider.max_grade_value} 分`);
                 return;
             }
             
@@ -213,15 +250,19 @@ export default function TaskFileObject({ view, user_id, assignmentTaskUUID }: Ta
                 assignment_task_submission_uuid: userSubmissions.assignment_task_submission_uuid,
                 task_submission: userSubmissions,
                 grade: grade,
-                task_submission_grade_feedback: 'Graded by teacher : @' + session.data.user.username,
+                task_submission_grade_feedback: '老師批改：@' + session.data.user.username,
             };
     
-            const res = await handleAssignmentTaskSubmission(values, assignmentTaskUUID, assignment.assignment_object.assignment_uuid, access_token);
-            if (res) {
-                getAssignmentTaskSubmissionFromIdentifiedUserUI();
-                toast.success(`Task graded successfully with ${grade} points`);
-            } else {
-                toast.error('Error grading task, please retry later.');
+            try {
+                const res = await handleAssignmentTaskSubmission(values, assignmentTaskUUID, assignment.assignment_object.assignment_uuid, access_token);
+                if (res?.success) {
+                    getAssignmentTaskSubmissionFromIdentifiedUserUI();
+                    toast.success(`已批改：${grade} 分`);
+                } else {
+                    toast.error(responseErrorMessage(res, '批改失敗，請稍後再試。'));
+                }
+            } catch (error) {
+                toast.error(responseErrorMessage(error, '批改失敗，請稍後再試。'));
             }
         }
     }
@@ -247,14 +288,14 @@ export default function TaskFileObject({ view, user_id, assignmentTaskUUID }: Ta
             {view === 'teacher' && (
                 <div className='flex flex-col sm:flex-row py-5 sm:py-6 text-xs sm:text-sm justify-center mx-auto space-y-2 sm:space-y-0 sm:space-x-3 text-slate-600 px-4 sm:px-2 text-center sm:text-left bg-slate-50 rounded-lg border border-slate-100'>
                     <Info size={18} className="mx-auto sm:mx-0 text-slate-500" />
-                    <p>User will be able to submit a file for this task, you'll be able to review it in the Submissions Tab</p>
+                    <p>學生可以為此題提交文件，老師可在提交記錄中查看並評分。</p>
                 </div>
             )}
             {view === 'custom-grading' && (
                 <div className='flex flex-col space-y-4 w-full px-2 sm:px-0'>
                     <div className='flex flex-col sm:flex-row py-5 sm:py-6 text-xs sm:text-sm justify-center mx-auto space-y-2 sm:space-y-0 sm:space-x-3 text-slate-600 px-4 sm:px-2 text-center sm:text-left bg-slate-50 rounded-lg border border-slate-100'>
                         <Download size={18} className="mx-auto sm:mx-0 text-slate-500" />
-                        <p>Please download the file and grade it manually, then input the grade above</p>
+                        <p>請下載學生提交的文件，人工查看後在上方輸入分數。</p>
                     </div>
                     {userSubmissions.fileUUID && !isLoading && assignmentTaskUUID && (
                         <Link
@@ -338,7 +379,14 @@ export default function TaskFileObject({ view, user_id, assignmentTaskUUID }: Ta
                                         />
                                         <div className="font-medium animate-pulse antialiased items-center bg-slate-100 text-slate-600 text-xs sm:text-sm rounded-md px-4 sm:px-5 py-2.5 flex">
                                             <Loader size={15} className="mr-2" />
-                                            <span>Loading</span>
+                                            <span>上傳中</span>
+                                        </div>
+                                    </div>
+                                ) : submissionIsFinal ? (
+                                    <div className="flex justify-center items-center w-full mt-5">
+                                        <div className="flex justify-center bg-amber-50 border border-amber-100 rounded-md text-amber-700 space-x-2 items-center p-3 transition-all shadow-xs w-full sm:w-auto">
+                                            <Info size={15} className="text-amber-600" />
+                                            <div className="text-xs sm:text-sm font-medium">作業已提交，不能更換檔案。請按「重做」後再修改。</div>
                                         </div>
                                     </div>
                                 ) : (
@@ -354,7 +402,7 @@ export default function TaskFileObject({ view, user_id, assignmentTaskUUID }: Ta
                                             onClick={() => document.getElementById("fileInput_" + assignmentTaskUUID)?.click()}
                                         >
                                             <UploadCloud size={15} className="mr-2" />
-                                            <span>Submit File</span>
+                                            <span>上傳文件</span>
                                         </button>
                                     </div>
                                 )}

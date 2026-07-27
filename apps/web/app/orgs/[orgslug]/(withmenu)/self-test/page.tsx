@@ -14,7 +14,7 @@ export async function generateMetadata(props: MetadataProps): Promise<Metadata> 
   })
 
   return {
-    title: 'Self-test - ' + org.name,
+    title: '自我練習 - ' + org.name,
     robots: {
       index: false,
       follow: false,

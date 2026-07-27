@@ -91,6 +91,34 @@ class _PathTrigger(str):
 
 
 class TestContentFilesRouter:
+    async def test_internal_pdf_build_staging_is_never_served(
+        self, client, app, org
+    ):
+        identities = (
+            APITokenUser(
+                id=10,
+                org_id=org.id,
+                created_by_user_id=1,
+                token_name="same-org",
+                user_uuid="token_same",
+            ),
+            APITokenUser(
+                id=11,
+                org_id=999,
+                created_by_user_id=2,
+                token_name="cross-org",
+                user_uuid="token_cross",
+            ),
+        )
+        for identity in identities:
+            app.dependency_overrides[get_current_user] = lambda identity=identity: identity
+            for path in (
+                "/content/_internal/pdf-builds/pdfbuild_secret/source_0.pdf",
+                "/content/%255finternal/pdf-builds/pdfbuild_secret/source_0.pdf",
+            ):
+                assert (await client.get(path)).status_code == 404
+                assert (await client.head(path)).status_code == 404
+
     def test_validate_content_path_branches(self):
         assert content_files._validate_content_path("orgs/abc/file.txt") == "orgs/abc/file.txt"
         assert content_files._validate_content_path("../secret.txt") is None

@@ -1,6 +1,7 @@
+from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Request, UploadFile, HTTPException
+from fastapi import APIRouter, Depends, Query, Request, Response, UploadFile, HTTPException
 from pydantic import BaseModel
 from src.db.courses.assignments import (
     AssignmentCreate,
@@ -30,8 +31,17 @@ from src.services.courses.activities.assignments import (
     mark_activity_as_done_for_user,
     put_assignment_task_reference_file,
     put_assignment_task_submission_file,
+    assignment_gradebook_to_csv,
+    assignment_gradebook_csv_filename,
+    school_operations_summary_csv_filename,
+    school_operations_summary_to_csv,
+    read_assignment_gradebook,
+    read_assignment_gradebook_summary,
+    read_school_operations_summary,
     read_assignment,
     read_assignment_from_activity_uuid,
+    read_my_assignment_remediation,
+    read_my_assignment_queue,
     read_assignment_submissions,
     read_assignment_task,
     read_assignment_task_submissions,
@@ -41,7 +51,10 @@ from src.services.courses.activities.assignments import (
     read_user_assignment_task_submissions,
     read_user_assignment_task_submissions_me,
     read_user_assignment_task_submissions_me_batch,
+    read_teacher_assignment_workbench,
+    create_my_assignment_remediation,
     retry_assignment_submission,
+    submit_my_assignment_remediation,
     update_assignment,
     update_assignment_submission,
     update_assignment_task,
@@ -55,9 +68,263 @@ class GradeSubmissionBody(BaseModel):
     overall_feedback: Optional[str] = None
 
 
+class RemediationSubmitBody(BaseModel):
+    answers: list[dict] = []
+
+
 router = APIRouter()
 
 ## ASSIGNMENTS ##
+
+
+@router.get(
+    "/org/{org_id}/workbench",
+    summary="Teacher assignment workbench",
+    description="Return org-level homework, submission, review, due-date, and AI action aggregates for the teacher dashboard.",
+)
+async def api_read_teacher_assignment_workbench(
+    org_id: int,
+    current_user: PublicUser = Depends(get_current_user),
+    db_session=Depends(get_db_session),
+):
+    return await read_teacher_assignment_workbench(org_id, current_user, db_session)
+
+
+@router.get(
+    "/org/{org_id}/operations-summary",
+    summary="School operations aggregate summary",
+    description="Return an aggregate-only Traditional Chinese school usage summary with small-cohort privacy protection.",
+)
+async def api_read_school_operations_summary(
+    org_id: int,
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+    course_id: Optional[int] = Query(default=None),
+    usergroup_id: Optional[int] = Query(default=None),
+    subject: Optional[str] = Query(default=None, max_length=120),
+    education_stage: Optional[str] = Query(default=None, max_length=120),
+    grade_level: Optional[str] = Query(default=None, max_length=120),
+    school_year: Optional[str] = Query(default=None, max_length=120),
+    term: Optional[str] = Query(default=None, max_length=120),
+    include_self_tests: bool = Query(default=True),
+    current_user: PublicUser = Depends(get_current_user),
+    db_session=Depends(get_db_session),
+):
+    return await read_school_operations_summary(
+        org_id,
+        current_user,
+        db_session,
+        start_date=start_date,
+        end_date=end_date,
+        course_id=course_id,
+        usergroup_id=usergroup_id,
+        subject=subject,
+        education_stage=education_stage,
+        grade_level=grade_level,
+        school_year=school_year,
+        term=term,
+        include_self_tests=include_self_tests,
+    )
+
+
+@router.get(
+    "/org/{org_id}/operations-summary.csv",
+    summary="School operations aggregate CSV",
+    description="Export the aggregate-only school operations summary without student-level data.",
+)
+async def api_export_school_operations_summary_csv(
+    org_id: int,
+    start_date: Optional[date] = Query(default=None),
+    end_date: Optional[date] = Query(default=None),
+    course_id: Optional[int] = Query(default=None),
+    usergroup_id: Optional[int] = Query(default=None),
+    subject: Optional[str] = Query(default=None, max_length=120),
+    education_stage: Optional[str] = Query(default=None, max_length=120),
+    grade_level: Optional[str] = Query(default=None, max_length=120),
+    school_year: Optional[str] = Query(default=None, max_length=120),
+    term: Optional[str] = Query(default=None, max_length=120),
+    include_self_tests: bool = Query(default=True),
+    current_user: PublicUser = Depends(get_current_user),
+    db_session=Depends(get_db_session),
+):
+    payload = await read_school_operations_summary(
+        org_id,
+        current_user,
+        db_session,
+        start_date=start_date,
+        end_date=end_date,
+        course_id=course_id,
+        usergroup_id=usergroup_id,
+        subject=subject,
+        education_stage=education_stage,
+        grade_level=grade_level,
+        school_year=school_year,
+        term=term,
+        include_self_tests=include_self_tests,
+    )
+    return Response(
+        content=school_operations_summary_to_csv(payload),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{school_operations_summary_csv_filename(payload)}"'
+            )
+        },
+    )
+
+
+@router.get(
+    "/org/{org_id}/gradebook",
+    summary="Assignment gradebook",
+    description="Return a class/student gradebook across assignments and optional self-test records.",
+)
+async def api_read_assignment_gradebook(
+    org_id: int,
+    course_id: Optional[int] = Query(default=None),
+    usergroup_id: Optional[int] = Query(default=None),
+    include_self_tests: bool = Query(default=False),
+    current_user: PublicUser = Depends(get_current_user),
+    db_session=Depends(get_db_session),
+):
+    return await read_assignment_gradebook(
+        org_id,
+        current_user,
+        db_session,
+        course_id=course_id,
+        usergroup_id=usergroup_id,
+        include_self_tests=include_self_tests,
+    )
+
+
+@router.get(
+    "/org/{org_id}/gradebook/summary",
+    summary="AI class learning summary",
+    description="Return a Traditional Chinese class learning summary based on the assignment gradebook, with deterministic fallback when AI is unavailable.",
+)
+async def api_read_assignment_gradebook_summary(
+    org_id: int,
+    course_id: Optional[int] = Query(default=None),
+    usergroup_id: Optional[int] = Query(default=None),
+    include_self_tests: bool = Query(default=False),
+    current_user: PublicUser = Depends(get_current_user),
+    db_session=Depends(get_db_session),
+):
+    return await read_assignment_gradebook_summary(
+        org_id,
+        current_user,
+        db_session,
+        course_id=course_id,
+        usergroup_id=usergroup_id,
+        include_self_tests=include_self_tests,
+    )
+
+
+@router.get(
+    "/org/{org_id}/my-queue",
+    summary="My assignment queue",
+    description="Return the current student's pending assignment summary and nearest assignments.",
+)
+async def api_read_my_assignment_queue(
+    org_id: int,
+    limit: int = Query(default=5, ge=1, le=10),
+    current_user: PublicUser = Depends(get_current_user),
+    db_session=Depends(get_db_session),
+):
+    return await read_my_assignment_queue(
+        org_id,
+        current_user,
+        db_session,
+        limit=limit,
+    )
+
+
+@router.get(
+    "/{assignment_uuid}/remediation/my",
+    summary="Read my assignment remediation practice",
+    description="Return the current student's remediation practice status for a graded assignment.",
+)
+async def api_read_my_assignment_remediation(
+    request: Request,
+    assignment_uuid: str,
+    current_user: PublicUser = Depends(get_current_user),
+    db_session=Depends(get_db_session),
+):
+    return await read_my_assignment_remediation(
+        request,
+        assignment_uuid,
+        current_user,
+        db_session,
+    )
+
+
+@router.post(
+    "/{assignment_uuid}/remediation/my",
+    summary="Create my assignment remediation practice",
+    description="Generate or return a short auto-gradable remediation practice for the current student's graded assignment.",
+)
+async def api_create_my_assignment_remediation(
+    request: Request,
+    assignment_uuid: str,
+    current_user: PublicUser = Depends(get_current_user),
+    db_session=Depends(get_db_session),
+):
+    return await create_my_assignment_remediation(
+        request,
+        assignment_uuid,
+        current_user,
+        db_session,
+    )
+
+
+@router.post(
+    "/{assignment_uuid}/remediation/my/submit",
+    summary="Submit my assignment remediation practice",
+    description="Submit and auto-grade the current student's remediation practice without changing the original assignment grade.",
+)
+async def api_submit_my_assignment_remediation(
+    request: Request,
+    assignment_uuid: str,
+    body: RemediationSubmitBody,
+    current_user: PublicUser = Depends(get_current_user),
+    db_session=Depends(get_db_session),
+):
+    return await submit_my_assignment_remediation(
+        request,
+        assignment_uuid,
+        body.answers,
+        current_user,
+        db_session,
+    )
+
+
+@router.get(
+    "/org/{org_id}/gradebook.csv",
+    summary="Assignment gradebook CSV export",
+    description="Export the assignment/self-test gradebook as a Traditional Chinese CSV.",
+)
+async def api_export_assignment_gradebook_csv(
+    org_id: int,
+    course_id: Optional[int] = Query(default=None),
+    usergroup_id: Optional[int] = Query(default=None),
+    include_self_tests: bool = Query(default=False),
+    current_user: PublicUser = Depends(get_current_user),
+    db_session=Depends(get_db_session),
+):
+    payload = await read_assignment_gradebook(
+        org_id,
+        current_user,
+        db_session,
+        course_id=course_id,
+        usergroup_id=usergroup_id,
+        include_self_tests=include_self_tests,
+    )
+    csv_text = assignment_gradebook_to_csv(payload)
+    filename = assignment_gradebook_csv_filename(payload)
+    return Response(
+        content=csv_text,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post(

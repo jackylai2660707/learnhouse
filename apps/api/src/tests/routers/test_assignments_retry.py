@@ -34,6 +34,8 @@ from src.db.courses.certifications import CertificateUser, Certifications
 from src.db.trail_runs import TrailRun
 from src.db.trail_steps import TrailStep
 from src.db.trails import Trail
+from src.db.usergroup_user import UserGroupUser
+from src.db.usergroups import UserGroup
 from src.routers.courses.assignments import router as assignments_router
 from src.security.auth import get_current_user
 from src.services.courses.activities.assignments import (
@@ -48,8 +50,31 @@ from src.services.courses.activities.assignments import (
 
 
 @pytest.fixture
-async def assignment(db, org, course, chapter, activity):
+async def assignment(db, org, course, chapter, activity, regular_user):
     """Assignment row with retries allowed by default."""
+    now = str(datetime.now())
+    usergroup = UserGroup(
+        name="Retry Class",
+        description="Class used by assignment retry tests",
+        org_id=org.id,
+        usergroup_uuid="usergroup_retry_test",
+        creation_date=now,
+        update_date=now,
+    )
+    db.add(usergroup)
+    await db.commit()
+    await db.refresh(usergroup)
+    db.add(
+        UserGroupUser(
+            usergroup_id=usergroup.id,
+            user_id=regular_user.id,
+            org_id=org.id,
+            creation_date=now,
+            update_date=now,
+        )
+    )
+    await db.commit()
+
     a = Assignment(
         id=1,
         title="Retryable",
@@ -62,6 +87,7 @@ async def assignment(db, org, course, chapter, activity):
         show_correct_answers=False,
         allow_retries=True,
         max_retries=3,
+        target_usergroup_ids=[usergroup.id],
         org_id=org.id,
         course_id=course.id,
         chapter_id=chapter.id,
@@ -223,7 +249,7 @@ async def _make_certificate(db, course, user_id):
 
 
 class TestRetryAssignmentSubmissionService:
-    async def test_retry_success_resets_submission_tasks_and_trailstep(
+    async def test_retry_success_preserves_answers_and_resets_scores_and_trailstep(
         self, db, regular_user, mock_request, org, course, activity, assignment, assignment_task
     ):
         user_id = regular_user.id
@@ -242,7 +268,7 @@ class TestRetryAssignmentSubmissionService:
                 mock_request, assignment.assignment_uuid, regular_user, db
             )
 
-        assert result["message"] == "Assignment User Submission reset for retry"
+        assert result["message"] == "已開放修改答案，可重新提交"
         assert result["attempt_number"] == 2
         assert result["max_retries"] == 3
         assert result["submission"]["submission_status"] == AssignmentUserSubmissionStatus.PENDING.value
@@ -253,12 +279,15 @@ class TestRetryAssignmentSubmissionService:
         assert submission.overall_feedback is None
         assert submission.attempt_number == 2
 
-        leftover_task_sub = (await db.execute(
+        preserved_task_sub = (await db.execute(
             select(AssignmentTaskSubmission).where(
                 AssignmentTaskSubmission.id == task_sub.id
             )
         )).scalars().first()
-        assert leftover_task_sub is None
+        assert preserved_task_sub is not None
+        assert preserved_task_sub.task_submission == {"answer": "x"}
+        assert preserved_task_sub.grade == 0
+        assert preserved_task_sub.task_submission_grade_feedback == ""
 
         await db.refresh(step)
         assert step.complete is False
@@ -288,7 +317,7 @@ class TestRetryAssignmentSubmissionService:
                 )
 
         assert exc_info.value.status_code == 403
-        assert "Retries are not enabled" in exc_info.value.detail
+        assert "這份作業未開放重做" in exc_info.value.detail
 
     async def test_retry_forbidden_when_attempt_limit_reached(
         self, db, regular_user, mock_request, assignment
@@ -313,7 +342,7 @@ class TestRetryAssignmentSubmissionService:
                 )
 
         assert exc_info.value.status_code == 403
-        assert "No retry attempts remaining" in exc_info.value.detail
+        assert "沒有剩餘重做次數" in exc_info.value.detail
 
     async def test_retry_rejects_non_graded_submission(
         self, db, regular_user, mock_request, assignment
@@ -335,7 +364,7 @@ class TestRetryAssignmentSubmissionService:
                 )
 
         assert exc_info.value.status_code == 400
-        assert "Only graded submissions" in exc_info.value.detail
+        assert "只有已批改的提交可以重做" in exc_info.value.detail
 
     async def test_retry_returns_404_when_no_submission_exists(
         self, db, regular_user, mock_request, assignment
@@ -350,7 +379,7 @@ class TestRetryAssignmentSubmissionService:
                 )
 
         assert exc_info.value.status_code == 404
-        assert "Assignment User Submission not found" in exc_info.value.detail
+        assert "找不到學生提交記錄" in exc_info.value.detail
 
     async def test_retry_returns_404_when_assignment_missing(
         self, db, regular_user, mock_request
@@ -449,6 +478,7 @@ class TestCreateAssignmentSubmissionRetryPath:
         course,
         activity,
         assignment,
+        assignment_task,
     ):
         original_uuid = "aus_reuse_after_retry"
         submission = await _make_user_submission(
@@ -463,6 +493,9 @@ class TestCreateAssignmentSubmissionRetryPath:
         )
         _, _, step = await _make_trail_artifacts(
             db, org.id, course.id, activity.id, regular_user.id, complete=False
+        )
+        await _make_task_submission(
+            db, assignment_task, regular_user.id, uuid="ats_retry_resubmit"
         )
         original_id = submission.id
 
@@ -522,7 +555,7 @@ class TestCreateAssignmentSubmissionRetryPath:
                 )
 
         assert exc_info.value.status_code == 400
-        assert "already exists" in exc_info.value.detail
+        assert "學生已提交這份作業" in exc_info.value.detail
 
     async def test_rejects_when_existing_row_is_graded(
         self, db, regular_user, mock_request, assignment
@@ -554,6 +587,7 @@ class TestCreateAssignmentSubmissionRetryPath:
         course,
         activity,
         assignment,
+        assignment_task,
     ):
         """When no AssignmentUserSubmission row exists yet, the service hits
         the else branch and creates a fresh row with attempt_number=1. The
@@ -561,6 +595,9 @@ class TestCreateAssignmentSubmissionRetryPath:
         via the new else branch that keeps the reuse path consistent."""
         _, _, step = await _make_trail_artifacts(
             db, org.id, course.id, activity.id, regular_user.id, complete=False
+        )
+        await _make_task_submission(
+            db, assignment_task, regular_user.id, uuid="ats_first_submit"
         )
 
         with patch(
@@ -669,7 +706,7 @@ async def client(app):
 class TestRetryAssignmentRouter:
     async def test_retry_endpoint_returns_200_and_new_attempt(self, client):
         expected = {
-            "message": "Assignment User Submission reset for retry",
+            "message": "已開放修改答案，可重新提交",
             "attempt_number": 2,
             "max_retries": 3,
             "submission": {"submission_status": "PENDING"},
@@ -686,3 +723,81 @@ class TestRetryAssignmentRouter:
         assert response.status_code == 200
         assert response.json() == expected
         mock_retry.assert_awaited_once()
+
+
+class TestSchoolOperationsSummaryRouter:
+    async def test_operations_summary_forwards_validated_filters(self, client):
+        expected = {
+            "scope": {
+                "org_id": 1,
+                "start_date": "2026-07-13",
+                "end_date": "2026-07-19",
+                "timezone": "Asia/Macau",
+            },
+            "metrics": {"record_count": 0},
+            "privacy": {"aggregate_only": True},
+        }
+        with patch(
+            "src.routers.courses.assignments.read_school_operations_summary",
+            new_callable=AsyncMock,
+            return_value=expected,
+        ) as mock_summary:
+            response = await client.get(
+                "/api/v1/assignments/org/1/operations-summary",
+                params={
+                    "start_date": "2026-07-13",
+                    "end_date": "2026-07-19",
+                    "course_id": 4,
+                    "usergroup_id": 8,
+                    "subject": "數學",
+                    "education_stage": "小學",
+                    "grade_level": "小四",
+                    "school_year": "2026/2027",
+                    "term": "第一學期",
+                    "include_self_tests": "false",
+                },
+            )
+
+        assert response.status_code == 200
+        assert response.json() == expected
+        kwargs = mock_summary.await_args.kwargs
+        assert kwargs["start_date"].isoformat() == "2026-07-13"
+        assert kwargs["end_date"].isoformat() == "2026-07-19"
+        assert kwargs["course_id"] == 4
+        assert kwargs["usergroup_id"] == 8
+        assert kwargs["subject"] == "數學"
+        assert kwargs["education_stage"] == "小學"
+        assert kwargs["grade_level"] == "小四"
+        assert kwargs["school_year"] == "2026/2027"
+        assert kwargs["term"] == "第一學期"
+        assert kwargs["include_self_tests"] is False
+
+    async def test_operations_summary_csv_returns_aggregate_attachment(self, client):
+        payload = {
+            "scope": {
+                "org_id": 1,
+                "start_date": "2026-07-13",
+                "end_date": "2026-07-19",
+            }
+        }
+        with patch(
+            "src.routers.courses.assignments.read_school_operations_summary",
+            new_callable=AsyncMock,
+            return_value=payload,
+        ), patch(
+            "src.routers.courses.assignments.school_operations_summary_to_csv",
+            return_value="\ufeff欄位,數值\r\n學習記錄,3\r\n",
+        ), patch(
+            "src.routers.courses.assignments.school_operations_summary_csv_filename",
+            return_value="learnhouse-operations-summary.csv",
+        ):
+            response = await client.get(
+                "/api/v1/assignments/org/1/operations-summary.csv"
+            )
+
+        assert response.status_code == 200
+        assert response.text.startswith("\ufeff欄位,數值")
+        assert response.headers["content-type"].startswith("text/csv")
+        assert response.headers["content-disposition"] == (
+            'attachment; filename="learnhouse-operations-summary.csv"'
+        )

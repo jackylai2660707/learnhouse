@@ -5,16 +5,17 @@ import { useLHSession } from '@components/Contexts/LHSessionContext';
 import { useOrg } from '@components/Contexts/OrgContext';
 import FormLayout, { FormField, FormLabelAndMessage, Input, Textarea } from '@components/Objects/StyledElements/Form/Form';
 import * as Form from '@radix-ui/react-form';
-import { getActivityByID } from '@services/courses/activities';
 import { updateAssignmentTask, updateReferenceFile } from '@services/courses/assignments';
 import { getTaskRefFileDir } from '@services/media/media';
 import { useFormik } from 'formik';
 import { Cloud, File, Info, Loader, UploadCloud } from 'lucide-react'
 import Link from 'next/link';
-import React, { useEffect } from 'react'
+import React from 'react'
 import toast from 'react-hot-toast';
 import { constructAcceptValue } from '@/lib/constants';
 import { useTranslation } from 'react-i18next';
+import { useQueryClient } from '@tanstack/react-query';
+import { queryKeys } from '@/lib/query/keys';
 
 const SUPPORTED_FILES = constructAcceptValue(['pdf', 'docx', 'mp4', 'jpg', 'png', 'pptx', 'zip'])
 
@@ -25,6 +26,7 @@ export function AssignmentTaskGeneralEdit() {
     const assignmentTaskState = useAssignmentsTask() as any
     const assignmentTaskStateHook = useAssignmentsTaskDispatch() as any
     const assignment = useAssignments() as any
+    const queryClient = useQueryClient()
 
     // No validate function — the teacher no longer configures points per task.
     // All tasks are graded out of 100 (a percentage). max_grade_value is still
@@ -40,8 +42,9 @@ export function AssignmentTaskGeneralEdit() {
         },
         onSubmit: async values => {
             const res = await updateAssignmentTask(values, assignmentTaskState.assignmentTask.assignment_task_uuid, assignment.assignment_object.assignment_uuid, access_token)
-            if (res) {
+            if (res && res.success !== false) {
                 assignmentTaskStateHook({ type: 'reload' })
+                queryClient.invalidateQueries({ queryKey: queryKeys.assignments.allCourseAssignments() })
                 toast.success(t('dashboard.assignments.editor.toasts.task_updated'))
             }
 
@@ -125,12 +128,9 @@ function UpdateTaskRef() {
     const assignment = useAssignments() as any
     const [isLoading, setIsLoading] = React.useState(false)
     const [error, setError] = React.useState('') as any
-    const [localRefFile, setLocalRefFile] = React.useState(null) as any
-    const [activity, setActivity] = React.useState('') as any
 
     const handleFileChange = async (event: any) => {
         const file = event.target.files[0]
-        setLocalRefFile(file)
         setIsLoading(true)
         const res = await updateReferenceFile(
             file,
@@ -162,40 +162,6 @@ function UpdateTaskRef() {
         )
     }
 
-    const deleteReferenceFile = async () => {
-        setIsLoading(true)
-        const res = await updateReferenceFile(
-            '',
-            assignmentTaskState.assignmentTask.assignment_task_uuid,
-            assignment.assignment_object.assignment_uuid,
-            access_token
-        )
-        assignmentTaskStateHook({ type: 'reload' })
-        // wait for 1 second to show loading animation
-        await new Promise((r) => setTimeout(r, 1500))
-        if (res.success === false) {
-            setError(res.data.detail)
-            setIsLoading(false)
-        } else {
-            setIsLoading(false)
-            setError('')
-        }
-    }
-
-    async function getActivityUI() {
-        const res = await getActivityByID(assignment.assignment_object.activity_id, null, access_token)
-        setActivity(res.data)
-    }
-
-
-
-    useEffect(() => {
-        getActivityUI()
-    }
-        , [assignmentTaskState, org])
-
-
-
     return (
         <div className="w-auto bg-gray-50 rounded-xl outline outline-1 outline-gray-200 h-[200px] shadow-sm">
             <div className="flex flex-col justify-center items-center h-full">
@@ -223,8 +189,6 @@ function UpdateTaskRef() {
                                     download
                                     target='_blank'
                                     className='bg-blue-500 text-white px-3 py-1 rounded-full text-xs font-semibold'>{t('dashboard.assignments.editor.task_editor.general.download')}</Link>
-                                {/** <button onClick={() => deleteReferenceFile()}
-                                    className='bg-red-500 text-white px-3 py-1 rounded-full text-xs font-semibold'>Delete</button> */}
                             </div>
                         </div>
                     )}

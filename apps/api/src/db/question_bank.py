@@ -73,7 +73,11 @@ class QuestionBankItemBase(SQLModel):
     assignment_type: AssignmentTaskTypeEnum
     contents: Dict = Field(default_factory=dict, sa_column=Column(JSON))
     tags: List[str] = Field(default_factory=list, sa_column=Column(JSON))
-    difficulty: str = "intermediate"
+    subject: str = ""
+    education_stage: str = ""
+    grade_level: str = ""
+    unit: str = ""
+    difficulty: str = "beginner"
     visibility: QuestionBankVisibilityEnum = QuestionBankVisibilityEnum.ORG
     category_id: Optional[int] = None
     org_id: int
@@ -102,6 +106,10 @@ class QuestionBankItemUpdate(SQLModel):
     assignment_type: Optional[AssignmentTaskTypeEnum] = None
     contents: Optional[Dict] = None
     tags: Optional[List[str]] = None
+    subject: Optional[str] = None
+    education_stage: Optional[str] = None
+    grade_level: Optional[str] = None
+    unit: Optional[str] = None
     difficulty: Optional[str] = None
     visibility: Optional[QuestionBankVisibilityEnum] = None
     category_id: Optional[int] = None
@@ -147,8 +155,8 @@ class QuestionBankItem(QuestionBankItemBase, table=True):
 class SaveAssignmentTaskToQuestionBankRequest(SQLModel):
     assignment_task_uuid: str
     category_id: Optional[int] = None
-    tags: List[str] = []
-    difficulty: str = "intermediate"
+    tags: List[str] = Field(default_factory=list)
+    difficulty: str = "beginner"
     visibility: QuestionBankVisibilityEnum = QuestionBankVisibilityEnum.ORG
 
 
