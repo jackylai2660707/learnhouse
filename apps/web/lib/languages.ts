@@ -13,7 +13,7 @@ export const AVAILABLE_LANGUAGES: Language[] = [
   { code: 'ja', translationKey: 'common.japanese', nativeName: '日本語' },
   { code: 'pt', translationKey: 'common.portuguese', nativeName: 'Português' },
   { code: 'ru', translationKey: 'common.russian', nativeName: 'Русский' },
-  { code: 'zh', translationKey: 'common.chinese', nativeName: '简体中文' },
+  { code: 'zh', translationKey: 'common.chinese', nativeName: '繁體中文' },
   { code: 'hi', translationKey: 'common.hindi', nativeName: 'हिन्दी' },
   { code: 'ko', translationKey: 'common.korean', nativeName: '한국어' },
   { code: 'it', translationKey: 'common.italian', nativeName: 'Italiano' },
@@ -34,4 +34,3 @@ export const getCurrentLanguageNativeName = (currentLang: string): string => {
   const language = getLanguageByCode(currentLang)
   return language?.nativeName || 'English'
 }
-

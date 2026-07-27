@@ -366,7 +366,9 @@ def delete_storage_directory(dir_path: str) -> bool:
 
     if content_delivery == "s3api":
         s3_client = get_storage_client()
-        if s3_client:
+        if not s3_client:
+            success = False
+        else:
             bucket = get_s3_bucket_name()
             prefix = dir_path if dir_path.endswith('/') else dir_path + '/'
             try:
@@ -375,20 +377,41 @@ def delete_storage_directory(dir_path: str) -> bool:
                     objects = page.get('Contents', [])
                     if objects:
                         delete_keys = [{'Key': obj['Key']} for obj in objects]
-                        s3_client.delete_objects(
+                        response = s3_client.delete_objects(
                             Bucket=bucket,
                             Delete={'Objects': delete_keys},
                         )
-            except Exception as e:
-                logger.error("Error deleting S3 directory %s: %s", dir_path, e)
+                        if isinstance(response, dict) and response.get('Errors'):
+                            success = False
+
+                # S3 delete responses can be partially successful. Verify the
+                # prefix is actually empty before reporting cleanup complete.
+                verifier = s3_client.get_paginator('list_objects_v2')
+                remaining = any(
+                    page.get('Contents')
+                    for page in verifier.paginate(Bucket=bucket, Prefix=prefix)
+                )
+                if remaining:
+                    success = False
+            except Exception as exc:
+                logger.error(
+                    "Storage directory deletion failed",
+                    extra={"operation": "delete_storage_directory", "error_code": type(exc).__name__},
+                )
                 success = False
 
     # Also clean up local directory if it exists
     if os.path.exists(dir_path):
         try:
-            shutil.rmtree(dir_path, ignore_errors=True)
-        except Exception:
-            pass
+            shutil.rmtree(dir_path)
+        except Exception as exc:
+            logger.error(
+                "Local storage directory deletion failed",
+                extra={"operation": "delete_storage_directory", "error_code": type(exc).__name__},
+            )
+            success = False
+        if os.path.exists(dir_path):
+            success = False
 
     return success
 

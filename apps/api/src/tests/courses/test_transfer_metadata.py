@@ -105,7 +105,9 @@ async def test_export_serialization_includes_extra_metadata(db, org):
     """Export dicts must carry extra_metadata at all three levels."""
     course = await _seed(db, org)
 
-    course_data, chapters = await _load_course_export_data(course, db)
+    course_data, chapters, _challenge_secrets = await _load_course_export_data(
+        course, db
+    )
 
     assert course_data["extra_metadata"] == COURSE_META
     assert len(chapters) == 1

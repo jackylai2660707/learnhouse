@@ -1,6 +1,6 @@
 'use client'
 import { NodeViewWrapper } from '@tiptap/react'
-import React, { useState, useCallback, useEffect, useRef } from 'react'
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react'
 import {
   Play,
   Plus,
@@ -27,6 +27,7 @@ import {
   Database,
   Upload,
   History,
+  Monitor,
 } from 'lucide-react'
 import { useEditorProvider } from '@components/Contexts/Editor/EditorContext'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
@@ -34,8 +35,17 @@ import { useOrg } from '@components/Contexts/OrgContext'
 import { useCourse } from '@components/Contexts/CourseContext'
 import { uploadSqliteDb } from '@services/blocks/CodePlayground/sqlite'
 import { getAPIUrl } from '@services/config/config'
-import { PLAYGROUND_LANGUAGES, getLanguageById } from './languages'
+import {
+  PLAYGROUND_LANGUAGES,
+  getApiAdapterRequirements,
+  getLanguageById,
+  getLanguageDisplayName,
+  isPreviewLanguage,
+  getLanguageOptionState,
+} from './languages'
+import LivePreview from './LivePreview'
 import SubmissionHistory from './SubmissionHistory'
+import ChallengeAnalytics from './ChallengeAnalytics'
 import CodeDiff from './CodeDiff'
 import { parseBlankRegions, getBlankRegionExtensions } from './FillInTheBlank'
 import { createPlaygroundKeymap } from './keymap'
@@ -47,6 +57,12 @@ import { Resizable } from 're-resizable'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
+import { useTranslation } from 'react-i18next'
+import {
+  createProgrammingActionCoordinator,
+  learnerResultId,
+  runChallengeWithLearnerTests,
+} from './challenge-run'
 
 const CodeMirror = dynamic(() => import('@uiw/react-codemirror'), {
   ssr: false,
@@ -116,6 +132,14 @@ async function getLanguageExtension(codemirrorLang: string) {
       const { xml } = await import('@codemirror/lang-xml')
       return xml()
     }
+    case 'html': {
+      const { html } = await import('@codemirror/lang-html')
+      return html()
+    }
+    case 'css': {
+      const { css } = await import('@codemirror/lang-css')
+      return css()
+    }
     case 'markdown': {
       const { markdown } = await import('@codemirror/lang-markdown')
       return markdown()
@@ -131,57 +155,57 @@ async function getLanguageExtension(codemirrorLang: string) {
     case 'perl': {
       const { StreamLanguage } = await import('@codemirror/language')
       const { perl } = await import('@codemirror/legacy-modes/mode/perl')
-      return StreamLanguage.define(perl)
+      return StreamLanguage.define(perl as unknown as Parameters<typeof StreamLanguage.define>[0])
     }
     case 'r': {
       const { StreamLanguage } = await import('@codemirror/language')
       const { r } = await import('@codemirror/legacy-modes/mode/r')
-      return StreamLanguage.define(r)
+      return StreamLanguage.define(r as unknown as Parameters<typeof StreamLanguage.define>[0])
     }
     case 'haskell': {
       const { StreamLanguage } = await import('@codemirror/language')
       const { haskell } = await import(
         '@codemirror/legacy-modes/mode/haskell'
       )
-      return StreamLanguage.define(haskell)
+      return StreamLanguage.define(haskell as unknown as Parameters<typeof StreamLanguage.define>[0])
     }
     case 'lua': {
       const { StreamLanguage } = await import('@codemirror/language')
       const { lua } = await import('@codemirror/legacy-modes/mode/lua')
-      return StreamLanguage.define(lua)
+      return StreamLanguage.define(lua as unknown as Parameters<typeof StreamLanguage.define>[0])
     }
     case 'clojure': {
       const { StreamLanguage } = await import('@codemirror/language')
       const { clojure } = await import(
         '@codemirror/legacy-modes/mode/clojure'
       )
-      return StreamLanguage.define(clojure)
+      return StreamLanguage.define(clojure as unknown as Parameters<typeof StreamLanguage.define>[0])
     }
     case 'shell': {
       const { StreamLanguage } = await import('@codemirror/language')
       const { shell } = await import('@codemirror/legacy-modes/mode/shell')
-      return StreamLanguage.define(shell)
+      return StreamLanguage.define(shell as unknown as Parameters<typeof StreamLanguage.define>[0])
     }
     case 'pascal': {
       const { StreamLanguage } = await import('@codemirror/language')
       const { pascal } = await import(
         '@codemirror/legacy-modes/mode/pascal'
       )
-      return StreamLanguage.define(pascal)
+      return StreamLanguage.define(pascal as unknown as Parameters<typeof StreamLanguage.define>[0])
     }
     case 'fortran': {
       const { StreamLanguage } = await import('@codemirror/language')
       const { fortran } = await import(
         '@codemirror/legacy-modes/mode/fortran'
       )
-      return StreamLanguage.define(fortran)
+      return StreamLanguage.define(fortran as unknown as Parameters<typeof StreamLanguage.define>[0])
     }
     case 'powershell': {
       const { StreamLanguage } = await import('@codemirror/language')
       const { powerShell } = await import(
         '@codemirror/legacy-modes/mode/powershell'
       )
-      return StreamLanguage.define(powerShell)
+      return StreamLanguage.define(powerShell as unknown as Parameters<typeof StreamLanguage.define>[0])
     }
     default: {
       const { javascript } = await import('@codemirror/lang-javascript')
@@ -294,7 +318,7 @@ interface TestResult {
   memory: number | null
 }
 
-type RightTab = 'description' | 'tests' | 'output' | 'history'
+type RightTab = 'description' | 'preview' | 'tests' | 'output' | 'history'
 type Difficulty = 'easy' | 'medium' | 'hard'
 type SolutionVisibility = 'never' | 'after_pass' | 'always'
 
@@ -432,16 +456,25 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
   const course = useCourse() as any
   const isEditable = editorState?.isEditable ?? true
   const accessToken = session?.data?.tokens?.access_token
+  const { t } = useTranslation()
 
   const languageId: number = node.attrs.languageId
-  const languageName: string = node.attrs.languageName
+  // Tiptap supplies "Python 3" for omitted legacy attrs. A valid language id
+  // is canonical, so a stale display label cannot misrepresent the runtime.
+  const languageName = getLanguageDisplayName(languageId, node.attrs.languageName)
   const challengeUuid: string = node.attrs.challengeUuid || ''
   const required: boolean = node.attrs.required ?? true
   const starterCode: string = node.attrs.starterCode
-  const testCases: TestCase[] = node.attrs.testCases || []
-  const hiddenTestCases: TestCase[] = node.attrs.hiddenTestCases || []
+  const testCases: TestCase[] = useMemo(
+    () => node.attrs.testCases || [],
+    [node.attrs.testCases]
+  )
+  const hiddenTestCases: TestCase[] = useMemo(
+    () => node.attrs.hiddenTestCases || [],
+    [node.attrs.hiddenTestCases]
+  )
   const description: string = node.attrs.description || ''
-  const hints: string[] = node.attrs.hints || []
+  const hints: string[] = useMemo(() => node.attrs.hints || [], [node.attrs.hints])
   const difficulty: Difficulty = node.attrs.difficulty || 'medium'
   const solutionCode: string = node.attrs.solutionCode || ''
   const solutionVisibility: SolutionVisibility = node.attrs.solutionVisibility || 'after_pass'
@@ -452,24 +485,77 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
   const sqliteDbName: string = node.attrs.sqliteDbName || ''
   const timedMode: boolean = node.attrs.timedMode || false
   const timedDurationMs: number = node.attrs.timedDurationMs ?? 300000
-  const additionalFiles: { name: string; content: string }[] = node.attrs.additionalFiles || []
+  const additionalFiles: { name: string; content: string }[] = useMemo(
+    () => node.attrs.additionalFiles || [],
+    [node.attrs.additionalFiles]
+  )
+  const additionalFilesKey = additionalFiles.map((f) => `${f.name}:${f.content}`).join('\u0000')
 
-  const isSqlLanguage = languageId === 82
-
+  const adapterRequirements = getApiAdapterRequirements(languageId)
+  const isSqlLanguage = adapterRequirements.includes('sqlite_db_path')
+  const sqlDatabaseRequired = isSqlLanguage && !sqliteDbPath
+  // HTML/CSS/JS renders in a sandboxed iframe in the browser; it is never sent
+  // to the executor.
+  const isPreviewMode = isPreviewLanguage(languageId)
   const blockId = node.attrs.id || 'unknown'
+  const languageOptionState = getLanguageOptionState(languageId, {
+    previewSupported: true,
+    apiAdaptersSupported: true,
+  })
+  const runtimeUnavailable = languageOptionState.disabled
+  const executionUnavailable = runtimeUnavailable || sqlDatabaseRequired
+  const runtimeWarningId = `code-runtime-warning-${blockId}`
+  const needsSignIn = !isPreviewMode && !accessToken
+  const challengeUnavailable = !isEditable && !isPreviewMode && !challengeUuid
+  const actionAvailabilityMessage = needsSignIn
+    ? t('code_playground.errors.authentication_required')
+    : challengeUnavailable
+      ? t('code_playground.errors.challenge_required')
+      : null
+  const actionAvailabilityWarningId = actionAvailabilityMessage
+    ? `code-action-availability-warning-${blockId}`
+    : undefined
+  const actionDescriptionIds = [
+    executionUnavailable ? runtimeWarningId : null,
+    actionAvailabilityWarningId,
+  ].filter(Boolean).join(' ') || undefined
   const activityUuid = props.extension?.options?.activity?.activity_uuid || ''
 
   const [code, setCode] = useState(starterCode)
   const [results, setResults] = useState<TestResult[] | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  // Browser previews run locally and do not require an account. Executor runs
+  // require an authenticated request; formal submission also requires a durable
+  // challenge id. Keep the native disabled state and its visual/a11y state in
+  // one place so a public or auth-loading view cannot look clickable.
+  const canRun = isPreviewMode || (
+    !executionUnavailable && !isRunning && !isSubmitting && Boolean(accessToken)
+  )
+  const canSubmit = !executionUnavailable && !isRunning && !isSubmitting &&
+    Boolean(accessToken) && Boolean(challengeUuid)
+  const actionCoordinatorRef = useRef(createProgrammingActionCoordinator())
+  const [executionError, setExecutionError] = useState<string | null>(null)
   const [extensions, setExtensions] = useState<any[]>([])
   const [showLangDropdown, setShowLangDropdown] = useState(false)
-  const [activeTab, setActiveTab] = useState<RightTab>('description')
+  const [activeTab, setActiveTab] = useState<RightTab>(isPreviewMode ? 'preview' : 'description')
+  const [mobilePane, setMobilePane] = useState<'code' | 'details'>('code')
+
+  // Live preview (HTML/CSS/JS): forced reloads and error count for the tab badge
+  const [previewNonce, setPreviewNonce] = useState(0)
+  const [previewErrorCount, setPreviewErrorCount] = useState(0)
+  // Learner-side working copy of the CSS/JS panes. Preview mode never submits
+  // to the server, so these edits are ephemeral by design — same as `code`.
+  const [previewFiles, setPreviewFiles] = useState<{ name: string; content: string }[]>([])
+  const [fileExtensions, setFileExtensions] = useState<any[]>([])
+
+  // Which copy of the extra files the UI reads: the learner's editable working
+  // copy in preview mode, the authored attrs everywhere else.
+  const useLearnerFiles = isPreviewMode && !isEditable
+  const editorFiles = useLearnerFiles ? previewFiles : additionalFiles
   const [expandedHints, setExpandedHints] = useState<Set<number>>(new Set())
 
   // Feature 3: Solution Reveal
-  const [, setAttemptCount] = useState(0)
   const [showSolution, setShowSolution] = useState(false)
   const [solutionExtensions, setSolutionExtensions] = useState<any[]>([])
   const [solutionView, setSolutionView] = useState<'diff' | 'solution'>('diff')
@@ -497,6 +583,11 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
   const parsedErrorsRef = useRef<ReturnType<typeof parseErrors>>([])
   const cmViewRef = useRef<any>(null)
   const fetchedChallengeRef = useRef<string | null>(null)
+  const fetchedStudentStateRef = useRef<string | null>(null)
+  const [formalPassed, setFormalPassed] = useState(false)
+  const [solutionAvailable, setSolutionAvailable] = useState(false)
+  const [revealedSolution, setRevealedSolution] = useState('')
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0)
 
   // Feature: Timed Challenge
   const [challengeStarted, setChallengeStarted] = useState(false)
@@ -506,9 +597,6 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
 
   // Student custom test cases
   const [studentTestCases, setStudentTestCases] = useState<TestCase[]>([])
-
-  // Feature 17: Copy output
-  const outputCopy = useCopyToClipboard()
 
   useEffect(() => {
     if (!isEditable) return
@@ -533,12 +621,41 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
         if (!data) return
         updateAttributes({
           required: data.required,
+          solutionCode: data.solutionCode || '',
           solutionVisibility: data.solutionVisibility || solutionVisibility,
           hiddenTestCases: data.hiddenTestCases || [],
         })
       })
-      .catch(console.error)
+      .catch(() => {
+        // Editor hydration is optional; never log provider/API response bodies.
+      })
   }, [isEditable, challengeUuid, accessToken, updateAttributes, solutionVisibility])
+
+  useEffect(() => {
+    if (isEditable || !challengeUuid || !accessToken) return
+    if (fetchedStudentStateRef.current === challengeUuid) return
+    fetchedStudentStateRef.current = challengeUuid
+    setFormalPassed(false)
+    setSolutionAvailable(false)
+    setRevealedSolution('')
+    setShowSolution(false)
+    fetch(`${getAPIUrl()}coding-challenges/${encodeURIComponent(challengeUuid)}/state?page=1&limit=1`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+      .then(async (resp) => {
+        if (!resp.ok) throw new Error('未能載入程式挑戰進度')
+        return resp.json()
+      })
+      .then((data) => {
+        setFormalPassed(Boolean(data.passed))
+        setSolutionAvailable(Boolean(data.solution_available))
+        const latestCode = data.submissions?.[0]?.source_code
+        if (typeof latestCode === 'string') setCode(latestCode)
+      })
+      .catch(() => {
+        setExecutionError(t('code_playground.errors.state'))
+      })
+  }, [isEditable, challengeUuid, accessToken, t])
 
   // Load CodeMirror extensions
   useEffect(() => {
@@ -601,9 +718,44 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
     if (cmViewRef.current) cmViewRef.current.dispatch({})
   }, [code])
 
+  // Keep the right panel on a tab that still exists after a language switch.
+  useEffect(() => {
+    if (!isPreviewMode && activeTab === 'preview') setActiveTab('description')
+    if (isPreviewMode && activeTab === 'output') setActiveTab('preview')
+  }, [isPreviewMode, activeTab])
+
+  // Seed the learner's working copy of the CSS/JS panes from the author's files.
+  useEffect(() => {
+    setPreviewFiles(additionalFiles.map((f) => ({ ...f })))
+    // Re-seed only when the authored set changes, not on every learner keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [additionalFilesKey])
+
+  // Syntax highlighting for the additional-file panes, chosen by extension.
+  const activeFileName =
+    typeof activeFileTab === 'number' ? editorFiles[activeFileTab]?.name || '' : ''
+  useEffect(() => {
+    if (typeof activeFileTab !== 'number') return
+    let cancelled = false
+    const cmLang = /\.s?css$/i.test(activeFileName)
+      ? 'css'
+      : /\.m?js$/i.test(activeFileName)
+        ? 'javascript'
+        : /\.html?$/i.test(activeFileName)
+          ? 'html'
+          : 'markdown'
+    Promise.all([getLanguageExtension(cmLang), getTheme()]).then(([langExt, theme]) => {
+      if (!cancelled) setFileExtensions([langExt, theme])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activeFileTab, activeFileName])
+
   // Load solution CodeMirror extensions
   useEffect(() => {
-    if (showSolution && solutionCode) {
+    const authorizedSolution = isEditable ? solutionCode : revealedSolution
+    if (showSolution && authorizedSolution) {
       const lang = getLanguageById(languageId)
       if (lang) {
         Promise.all([getLanguageExtension(lang.codemirrorLang), getTheme()]).then(
@@ -611,7 +763,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
         )
       }
     }
-  }, [showSolution, solutionCode, languageId])
+  }, [showSolution, solutionCode, revealedSolution, isEditable, languageId])
 
   useEffect(() => {
     if (!isEditable) {
@@ -667,6 +819,12 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
     (langId: number) => {
       const lang = PLAYGROUND_LANGUAGES.find((l) => l.id === langId)
       if (!lang) return
+      // Defence in depth: the dropdown disables these, but never let an
+      // unrunnable language reach the block attrs.
+      if (getLanguageOptionState(lang.id, {
+        previewSupported: true,
+        apiAdaptersSupported: true,
+      }).disabled) return
       updateAttributes({
         languageId: lang.id,
         languageName: lang.name,
@@ -747,9 +905,14 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
   const addStudentTestCase = useCallback(() => {
     setStudentTestCases((prev) => [
       ...prev,
-      { id: uuidv4(), label: `My Test ${prev.length + 1}`, stdin: '', expectedStdout: '' },
+      {
+        id: uuidv4(),
+        label: t('code_playground.tests.custom_label', { count: prev.length + 1 }),
+        stdin: '',
+        expectedStdout: '',
+      },
     ])
-  }, [])
+  }, [t])
 
   const removeStudentTestCase = useCallback((id: string) => {
     setStudentTestCases((prev) => prev.filter((tc) => tc.id !== id))
@@ -791,10 +954,17 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
   }, [])
 
   const addAdditionalFile = useCallback(() => {
+    // In preview mode the extra files become the CSS / JS panes, so seed the
+    // names the preview actually links in.
+    const defaultName = isPreviewMode
+      ? additionalFiles.some((f) => /\.s?css$/i.test(f.name || ''))
+        ? 'script.js'
+        : 'styles.css'
+      : 'data.txt'
     updateAttributes({
-      additionalFiles: [...additionalFiles, { name: 'data.txt', content: '' }],
+      additionalFiles: [...additionalFiles, { name: defaultName, content: '' }],
     })
-  }, [additionalFiles, updateAttributes])
+  }, [additionalFiles, isPreviewMode, updateAttributes])
 
   const removeAdditionalFile = useCallback((index: number) => {
     updateAttributes({
@@ -814,6 +984,12 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
     updateAttributes({ additionalFiles: updated })
   }, [additionalFiles, updateAttributes])
 
+  // Learners get their own editable copy of the CSS/JS panes in preview mode;
+  // everywhere else the panes stay read-only author content.
+  const updatePreviewFile = useCallback((index: number, value: string) => {
+    setPreviewFiles((prev) => prev.map((f, i) => (i === index ? { ...f, content: value } : f)))
+  }, [])
+
   const resetCode = useCallback(() => {
     setCode(starterCode)
     setResults(null)
@@ -829,7 +1005,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
       const courseUuid = course?.courseStructure?.course_uuid
       const blockId = node.attrs.id || uuidv4()
       if (!activityUuid || !orgUuid || !courseUuid) {
-        console.error('Missing context for SQLite upload')
+        setExecutionError(t('code_playground.errors.sqlite_upload'))
         return
       }
       const result = await uploadSqliteDb(
@@ -839,13 +1015,13 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
         sqliteDbPath: result.file_path,
         sqliteDbName: result.file_name,
       })
-    } catch (err) {
-      console.error('SQLite upload error:', err)
+    } catch {
+      setExecutionError(t('code_playground.errors.sqlite_upload'))
     } finally {
       setIsUploadingSqlite(false)
       if (sqliteInputRef.current) sqliteInputRef.current.value = ''
     }
-  }, [accessToken, org, course, props.extension, node.attrs.id, updateAttributes])
+  }, [accessToken, org, course, props.extension, node.attrs.id, t, updateAttributes])
 
   const removeSqliteDb = useCallback(() => {
     updateAttributes({ sqliteDbPath: '', sqliteDbName: '' })
@@ -853,34 +1029,54 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
 
   const runCode = useCallback(async () => {
     if (timedMode && challengeExpired && !isEditable) return
-    if (isRunning || !accessToken) return
+    // HTML/CSS/JS is preview-only — "Run" just re-renders the iframe, nothing
+    // is sent to the executor.
+    if (isPreviewMode) {
+      setPreviewNonce((n) => n + 1)
+      setActiveTab('preview')
+      setMobilePane('details')
+      return
+    }
+    if (runtimeUnavailable) {
+      setExecutionError(t('code_playground.errors.unsupported_runtime'))
+      setActiveTab('output')
+      setMobilePane('details')
+      return
+    }
+    if (sqlDatabaseRequired) {
+      setExecutionError(t('code_playground.errors.sqlite_required'))
+      setActiveTab('output')
+      setMobilePane('details')
+      return
+    }
+    if (
+      !canRun ||
+      !actionCoordinatorRef.current.tryStart('run')
+    ) return
     setIsRunning(true)
     setResults(null)
+    setExecutionError(null)
 
     const allTestCases = [...testCases, ...studentTestCases]
 
-    // Feature 3: Increment attempt count when running with test cases
-    if (allTestCases.length > 0 && !isEditable) {
-      setAttemptCount((prev) => prev + 1)
-    }
-
     try {
       if (!isEditable && challengeUuid) {
-        const resp = await fetch(`${getAPIUrl()}coding-challenges/${challengeUuid}/run`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${accessToken}`,
-          },
-          body: JSON.stringify({ source_code: code }),
+        const challengeResults = await runChallengeWithLearnerTests({
+          apiUrl: getAPIUrl(),
+          challengeUuid,
+          accessToken,
+          languageId,
+          sourceCode: code,
+          learnerTests: studentTestCases,
+          sqliteDbPath: isSqlLanguage ? sqliteDbPath : undefined,
+          additionalFiles,
         })
-        const data = await resp.json()
-        if (!resp.ok) throw new Error(data.detail || 'Code execution failed')
-        setResults(data.results || [])
-        const firstResult = data.results?.[0]
+        setResults(challengeResults)
+        const firstResult = challengeResults[0]
         parsedErrorsRef.current = parseErrors(firstResult?.stderr || null, firstResult?.compile_output || null)
         if (cmViewRef.current) cmViewRef.current.dispatch({})
         setActiveTab('output')
+        setMobilePane('details')
         return
       }
 
@@ -899,11 +1095,12 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
             ...(additionalFiles.length > 0 ? { additional_files: additionalFiles.map((f) => ({ name: f.name, content: f.content })) } : {}),
           }),
         })
+        if (!resp.ok) throw new Error('execution_request_failed')
         const data = await resp.json()
         const newResults: TestResult[] = [
           {
             id: 'single',
-            label: 'Output',
+            label: t('code_playground.tabs.output'),
             passed: data.status?.id === 3,
             actual_stdout: data.stdout,
             expected_stdout: '',
@@ -918,6 +1115,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
         parsedErrorsRef.current = parseErrors(data.stderr || null, data.compile_output || null)
         if (cmViewRef.current) cmViewRef.current.dispatch({})
         setActiveTab('output')
+        setMobilePane('details')
 
         // Save submission (learner mode only)
         if (!isEditable && activityUuid && accessToken) {
@@ -934,7 +1132,10 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
               passed: passedTests === totalTests && totalTests > 0,
               total_tests: totalTests, passed_tests: passedTests, execution_time_ms: execTime,
             }),
-          }).catch(console.error)
+          }).catch(() => {
+            // A scratch run result may remain visible even if optional history
+            // persistence is unavailable; never log source or response data.
+          })
         }
       } else {
         const resp = await fetch(`${getAPIUrl()}code/execute-batch`, {
@@ -956,12 +1157,14 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
             ...(additionalFiles.length > 0 ? { additional_files: additionalFiles.map((f) => ({ name: f.name, content: f.content })) } : {}),
           }),
         })
+        if (!resp.ok) throw new Error('execution_batch_request_failed')
         const data = await resp.json()
         setResults(data.results)
         const firstResult = data.results?.[0]
         parsedErrorsRef.current = parseErrors(firstResult?.stderr || null, firstResult?.compile_output || null)
         if (cmViewRef.current) cmViewRef.current.dispatch({})
         setActiveTab('output')
+        setMobilePane('details')
 
         // Save submission (learner mode only)
         if (!isEditable && activityUuid && accessToken) {
@@ -978,22 +1181,64 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
               passed: passedTests === totalTests && totalTests > 0,
               total_tests: totalTests, passed_tests: passedTests, execution_time_ms: execTime,
             }),
-          }).catch(console.error)
+          }).catch(() => {
+            // See the single-run persistence note above.
+          })
         }
       }
-    } catch (err) {
-      console.error('Code execution error:', err)
+    } catch {
+      setExecutionError(t('code_playground.errors.execution'))
+      setActiveTab('output')
+      setMobilePane('details')
     } finally {
       setIsRunning(false)
+      actionCoordinatorRef.current.finish('run')
     }
-  }, [isRunning, accessToken, testCases, languageId, code, isEditable, isSqlLanguage, sqliteDbPath, activityUuid, blockId, timedMode, challengeExpired, challengeUuid])
+  }, [
+    accessToken,
+    activityUuid,
+    additionalFiles,
+    blockId,
+    challengeExpired,
+    challengeUuid,
+    code,
+    isEditable,
+    isPreviewMode,
+    isSqlLanguage,
+    languageId,
+    runtimeUnavailable,
+    canRun,
+    sqlDatabaseRequired,
+    sqliteDbPath,
+    studentTestCases,
+    testCases,
+    timedMode,
+    t,
+  ])
 
   const submitChallenge = useCallback(async () => {
     if (timedMode && challengeExpired) return
-    if (isEditable || !challengeUuid || !accessToken || isSubmitting) return
+    // Preview languages have no server-side test suite to submit against.
+    if (isPreviewMode) return
+    if (runtimeUnavailable) {
+      setExecutionError(t('code_playground.errors.unsupported_runtime'))
+      setActiveTab('output')
+      setMobilePane('details')
+      return
+    }
+    if (sqlDatabaseRequired) {
+      setExecutionError(t('code_playground.errors.sqlite_required'))
+      setActiveTab('output')
+      setMobilePane('details')
+      return
+    }
+    if (
+      !canSubmit ||
+      !actionCoordinatorRef.current.tryStart('submit')
+    ) return
     setIsSubmitting(true)
     setResults(null)
-    setAttemptCount((prev) => prev + 1)
+    setExecutionError(null)
     try {
       const resp = await fetch(`${getAPIUrl()}coding-challenges/${challengeUuid}/submit`, {
         method: 'POST',
@@ -1004,18 +1249,44 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
         body: JSON.stringify({ source_code: code }),
       })
       const data = await resp.json()
-      if (!resp.ok) throw new Error(data.detail || 'Challenge submission failed')
+      if (!resp.ok) throw new Error('challenge_submission_failed')
       setResults(data.results || [])
+      setFormalPassed(Boolean(data.progress_passed))
+      setSolutionAvailable(Boolean(data.solution_available))
+      setHistoryRefreshKey((value) => value + 1)
       const firstResult = data.results?.[0]
       parsedErrorsRef.current = parseErrors(firstResult?.stderr || null, firstResult?.compile_output || null)
       if (cmViewRef.current) cmViewRef.current.dispatch({})
       setActiveTab('output')
-    } catch (err) {
-      console.error('Challenge submission error:', err)
+      setMobilePane('details')
+    } catch {
+      setExecutionError(t('code_playground.errors.submit'))
+      setActiveTab('output')
+      setMobilePane('details')
     } finally {
       setIsSubmitting(false)
+      actionCoordinatorRef.current.finish('submit')
     }
-  }, [accessToken, challengeExpired, challengeUuid, code, isEditable, isSubmitting, timedMode])
+  }, [accessToken, canSubmit, challengeExpired, challengeUuid, code, isPreviewMode, runtimeUnavailable, sqlDatabaseRequired, timedMode, t])
+
+  const toggleSolution = useCallback(async () => {
+    if (showSolution) {
+      setShowSolution(false)
+      return
+    }
+    if (!solutionAvailable || !challengeUuid || !accessToken) return
+    try {
+      const resp = await fetch(`${getAPIUrl()}coding-challenges/${encodeURIComponent(challengeUuid)}/solution`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+      const data = await resp.json()
+      if (!resp.ok) throw new Error('challenge_solution_load_failed')
+      setRevealedSolution(data.solution_code || '')
+      setShowSolution(true)
+    } catch {
+      setExecutionError(t('code_playground.errors.solution'))
+    }
+  }, [accessToken, challengeUuid, showSolution, solutionAvailable, t])
 
   const runCodeRef = useRef(runCode)
   const resetCodeRef = useRef(resetCode)
@@ -1056,13 +1327,8 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
   const executionTime = results?.[0]?.time
 
   // Solution reveal policy for coding challenges.
-  const canRevealSolution =
-    Boolean(solutionCode) &&
-    !isEditable &&
-    (
-      solutionVisibility === 'always' ||
-      (solutionVisibility === 'after_pass' && Boolean(allPassed))
-    )
+  const displayedSolution = isEditable ? solutionCode : revealedSolution
+  const canRevealSolution = !isEditable && formalPassed && solutionAvailable
 
   // Feature 10: Timer state
   const timerProgress = Math.min((elapsedMs / timeLimitMs) * 100, 100)
@@ -1076,10 +1342,21 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
   const diff = DIFFICULTY_CONFIG[difficulty]
 
   const tabs: { id: RightTab; label: string; icon: React.ReactNode; badge?: React.ReactNode }[] = [
-    { id: 'description', label: 'Description', icon: <FileText size={13} /> },
+    { id: 'description', label: t('code_playground.tabs.description'), icon: <FileText size={13} /> },
+    {
+      id: 'preview',
+      label: t('code_playground.tabs.preview'),
+      icon: <Monitor size={13} />,
+      badge:
+        previewErrorCount > 0 ? (
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full leading-none bg-red-100 text-red-600">
+            {previewErrorCount}
+          </span>
+        ) : null,
+    },
     {
       id: 'tests',
-      label: 'Test Cases',
+      label: t('code_playground.tabs.tests'),
       icon: <FlaskConical size={13} />,
       badge:
         results && testCases.length > 0 ? (
@@ -1096,16 +1373,27 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
     },
     {
       id: 'output',
-      label: 'Output',
+      label: t('code_playground.tabs.output'),
       icon: <Terminal size={13} />,
       badge: results ? (
         <span className="w-2 h-2 rounded-full bg-neutral-400 animate-pulse" />
       ) : null,
     },
-    { id: 'history' as RightTab, icon: <History size={13} />, label: 'History' },
+    { id: 'history' as RightTab, icon: <History size={13} />, label: t('code_playground.tabs.history') },
   ]
 
-  const visibleTabs = isEditable ? tabs.filter(t => t.id !== 'history') : tabs
+  // Preview replaces the server-side output/tests tabs for HTML; other
+  // languages never show the preview tab.
+  const hiddenTabIds = new Set<RightTab>()
+  if (isEditable) hiddenTabIds.add('history')
+  if (isPreviewMode) {
+    hiddenTabIds.add('output')
+    hiddenTabIds.add('tests')
+    hiddenTabIds.add('history')
+  } else {
+    hiddenTabIds.add('preview')
+  }
+  const visibleTabs = tabs.filter((tab) => !hiddenTabIds.has(tab.id))
 
   // ── Copy button helper ──────────────────────────────────────────
   const CopyButton: React.FC<{ text: string; className?: string }> = ({ text, className = '' }) => {
@@ -1124,11 +1412,18 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
   // ── Tab: Description ──────────────────────────────────────────
   const renderDescriptionTab = () => (
     <div className="p-5 space-y-4 overflow-y-auto h-full">
+      {challengeUuid && accessToken && (
+        <ChallengeAnalytics
+          challengeUuid={challengeUuid}
+          accessToken={accessToken}
+          showPendingState={isEditable}
+        />
+      )}
       {isEditable ? (
         <>
           <div>
             <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider mb-1.5 block">
-              Description
+              {t('code_playground.editor.description')}
             </label>
             <textarea
               value={description}
@@ -1140,7 +1435,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
           </div>
           <div>
             <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider mb-1.5 block">
-              Difficulty
+              {t('code_playground.editor.difficulty')}
             </label>
             <div className="flex gap-2">
               {(['easy', 'medium', 'hard'] as Difficulty[]).map((d) => {
@@ -1165,7 +1460,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
           <div className="flex items-center justify-between rounded-lg border border-neutral-200 bg-neutral-50 px-3 py-2.5 nice-shadow">
             <div>
               <label className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider block">
-                Required Challenge
+                {t('code_playground.editor.required')}
               </label>
               <p className="text-[10px] text-neutral-400">Learners complete the activity after required challenges pass.</p>
             </div>
@@ -1178,7 +1473,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
           </div>
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">Hints</label>
+              <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">{t('code_playground.editor.hints')}</label>
               <button onClick={addHint} className="flex items-center gap-1 text-[11px] font-medium text-neutral-400 hover:text-neutral-600 transition-colors">
                 <Plus size={11} /> Add
               </button>
@@ -1250,13 +1545,13 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
               className="flex items-center gap-2 text-[11px] font-semibold text-neutral-400 uppercase tracking-wider hover:text-neutral-600 transition-colors w-full"
             >
               <Settings2 size={12} />
-              Advanced
+              {t('code_playground.editor.advanced')}
               <ChevronRight size={12} className={`ml-auto transition-transform ${showAdvanced ? 'rotate-90' : ''}`} />
             </button>
             {showAdvanced && (
               <div className="mt-3 space-y-3">
                 <div>
-                  <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider mb-1 block">Solution Code</label>
+                  <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider mb-1 block">{t('code_playground.editor.solution_code')}</label>
                   <p className="text-[11px] text-neutral-400 mb-1.5">Revealed to learners after enough attempts.</p>
                   <textarea
                     value={solutionCode}
@@ -1405,23 +1700,23 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
             </div>
           )}
 
-          {solutionCode && (
+          {(isEditable ? Boolean(solutionCode) : solutionAvailable || solutionVisibility !== 'never') && (
             <div className="space-y-2">
               {canRevealSolution ? (
                 <button
-                  onClick={() => setShowSolution(!showSolution)}
+                  onClick={toggleSolution}
                   className="flex items-center gap-2 px-3 py-2 rounded-lg text-[12px] font-semibold text-neutral-700 bg-neutral-50 border border-neutral-200 hover:bg-neutral-100 transition-colors nice-shadow"
                 >
                   <Eye size={13} />
-                  {showSolution ? 'Hide Solution' : 'View Solution'}
+                  {showSolution ? t('code_playground.solution.hide') : t('code_playground.solution.view')}
                 </button>
               ) : (
                 <div className="flex items-center gap-2 text-[11px] text-neutral-400">
                   <Lock size={11} />
                   <span>
                     {solutionVisibility === 'never'
-                      ? 'Solution is hidden for this challenge'
-                      : 'Solution unlocks after your submission passes'}
+                      ? t('code_playground.solution.hidden')
+                      : t('code_playground.solution.unlock_after_pass')}
                   </span>
                 </div>
               )}
@@ -1432,21 +1727,21 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                       onClick={() => setSolutionView('diff')}
                       className={`text-[10px] font-semibold px-2 py-1 rounded transition-colors ${solutionView === 'diff' ? 'bg-neutral-200 text-neutral-700' : 'text-neutral-400 hover:text-neutral-600'}`}
                     >
-                      Diff
+                      {t('code_playground.solution.diff')}
                     </button>
                     <button
                       onClick={() => setSolutionView('solution')}
                       className={`text-[10px] font-semibold px-2 py-1 rounded transition-colors ${solutionView === 'solution' ? 'bg-neutral-200 text-neutral-700' : 'text-neutral-400 hover:text-neutral-600'}`}
                     >
-                      Solution
+                      {t('code_playground.solution.title')}
                     </button>
                   </div>
                   {solutionView === 'diff' ? (
-                    <CodeDiff studentCode={code} solutionCode={solutionCode} />
+                    <CodeDiff studentCode={code} solutionCode={displayedSolution} />
                   ) : (
                     <div className={`rounded-lg overflow-hidden border border-neutral-200 nice-shadow ${cmClassName}`}>
                       {solutionExtensions.length > 0 && (
-                        <CodeMirror value={solutionCode} extensions={solutionExtensions} editable={false} height="auto" maxHeight="300px" style={cmStyles} basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: false }} />
+                        <CodeMirror value={displayedSolution} extensions={solutionExtensions} editable={false} height="auto" maxHeight="300px" style={cmStyles} basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: false }} />
                       )}
                     </div>
                   )}
@@ -1485,13 +1780,13 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
       {isEditable && (
         <div className="flex justify-end mb-1">
           <button onClick={addTestCase} className="flex items-center gap-1 text-[11px] font-medium text-neutral-400 hover:text-neutral-600 transition-colors">
-            <Plus size={12} /> Add Test Case
+            <Plus size={12} /> {t('code_playground.tests.add')}
           </button>
         </div>
       )}
       {testCases.length === 0 ? (
         <div className="text-[13px] text-neutral-400 text-center py-10">
-          {isEditable ? 'Add test cases to validate solutions.' : 'No test cases available.'}
+          {isEditable ? t('code_playground.tests.editor_empty') : t('code_playground.tests.student_empty')}
         </div>
       ) : (
         <div className="space-y-2.5">
@@ -1528,7 +1823,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                 </div>
                 <div className="px-3.5 pb-3 space-y-2 border-t border-neutral-100">
                   <div className="pt-2.5">
-                    <label className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-1 block">Input</label>
+                    <label className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-1 block">{t('code_playground.tests.input')}</label>
                     {isEditable ? (
                       <textarea value={tc.stdin} onChange={(e) => updateTestCase(tc.id, 'stdin', e.target.value)} className="w-full text-[12px] font-mono text-neutral-700 bg-neutral-50 border border-neutral-200 rounded-lg p-2.5 outline-none focus:border-neutral-300 resize-none transition-colors" rows={2} placeholder="stdin..." />
                     ) : (
@@ -1536,7 +1831,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                     )}
                   </div>
                   <div>
-                    <label className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-1 block">Expected Output</label>
+                    <label className="text-[10px] font-semibold text-neutral-400 uppercase tracking-wider mb-1 block">{t('code_playground.tests.expected')}</label>
                     {isEditable ? (
                       <textarea value={tc.expectedStdout} onChange={(e) => updateTestCase(tc.id, 'expectedStdout', e.target.value)} className="w-full text-[12px] font-mono text-neutral-700 bg-neutral-50 border border-neutral-200 rounded-lg p-2.5 outline-none focus:border-neutral-300 resize-none transition-colors" rows={2} placeholder="expected stdout..." />
                     ) : (
@@ -1545,7 +1840,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                   </div>
                   {r && !r.passed && r.actual_stdout != null && (
                     <div>
-                      <label className="text-[10px] font-semibold text-red-400 uppercase tracking-wider mb-1 block">Your Output</label>
+                      <label className="text-[10px] font-semibold text-red-400 uppercase tracking-wider mb-1 block">{t('code_playground.tests.your_output')}</label>
                       <pre className="text-[12px] font-mono text-red-600 bg-red-50 border border-red-100 rounded-lg p-2.5 whitespace-pre-wrap">{r.actual_stdout || '(no output)'}</pre>
                     </div>
                   )}
@@ -1559,17 +1854,17 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
         <div className="mt-4 pt-3 border-t border-neutral-100">
           <div className="flex items-center justify-between mb-2">
             <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider flex items-center gap-1.5">
-              <Lock size={11} /> Hidden Tests
+              <Lock size={11} /> {t('code_playground.tests.hidden')}
             </label>
             <button onClick={addHiddenTestCase} className="flex items-center gap-1 text-[11px] font-medium text-neutral-400 hover:text-neutral-600 transition-colors">
-              <Plus size={11} /> Add
+              <Plus size={11} /> {t('code_playground.tests.add')}
             </button>
           </div>
           <p className="text-[11px] text-neutral-400 mb-2">
-            Hidden tests run only on Submit and are stored server-side.
+            {t('code_playground.tests.hidden_help')}
           </p>
           {hiddenTestCases.length === 0 && (
-            <p className="text-[11px] text-neutral-400 italic">No hidden tests configured.</p>
+            <p className="text-[11px] text-neutral-400 italic">{t('code_playground.tests.hidden_empty')}</p>
           )}
           {hiddenTestCases.map((tc) => (
             <div key={tc.id} className="mb-3 rounded-lg border border-neutral-200 bg-neutral-50/50 p-2.5 nice-shadow">
@@ -1586,7 +1881,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
               </div>
               <div className="space-y-1.5">
                 <div>
-                  <label className="text-[9px] font-semibold text-neutral-400 uppercase">Input</label>
+                  <label className="text-[9px] font-semibold text-neutral-400 uppercase">{t('code_playground.tests.input')}</label>
                   <textarea
                     value={tc.stdin}
                     onChange={(e) => updateHiddenTestCase(tc.id, 'stdin', e.target.value)}
@@ -1596,7 +1891,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                   />
                 </div>
                 <div>
-                  <label className="text-[9px] font-semibold text-neutral-400 uppercase">Expected Output</label>
+                  <label className="text-[9px] font-semibold text-neutral-400 uppercase">{t('code_playground.tests.expected')}</label>
                   <textarea
                     value={tc.expectedStdout}
                     onChange={(e) => updateHiddenTestCase(tc.id, 'expectedStdout', e.target.value)}
@@ -1614,21 +1909,28 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
         <div className="mt-4 pt-3 border-t border-neutral-100">
           <div className="flex items-center justify-between mb-2">
             <label className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">
-              Your Test Cases
+              {t('code_playground.tests.yours')}
             </label>
             <button
               onClick={addStudentTestCase}
               className="flex items-center gap-1 text-[11px] font-medium text-blue-500 hover:text-blue-600 transition-colors"
             >
-              <Plus size={11} /> Add
+              <Plus size={11} /> {t('code_playground.tests.add')}
             </button>
           </div>
           {studentTestCases.length === 0 && (
-            <p className="text-[11px] text-neutral-400 italic">Add your own test cases to verify edge cases.</p>
+            <p className="text-[11px] text-neutral-400 italic">{t('code_playground.tests.empty_custom')}</p>
           )}
-          {studentTestCases.map((tc) => (
+          {studentTestCases.map((tc) => {
+            const result = results?.find((item) => item.id === learnerResultId(tc.id))
+            return (
             <div key={tc.id} className="mb-3 rounded-lg border border-blue-100 bg-blue-50/20 p-2.5">
               <div className="flex items-center gap-2 mb-1.5">
+                {result ? (
+                  result.passed
+                    ? <CheckCircle2 size={13} className="shrink-0 text-emerald-500" />
+                    : <XCircle size={13} className="shrink-0 text-red-500" />
+                ) : null}
                 <input
                   value={tc.label}
                   onChange={(e) => updateStudentTestCase(tc.id, 'label', e.target.value)}
@@ -1640,28 +1942,33 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
               </div>
               <div className="space-y-1.5">
                 <div>
-                  <label className="text-[9px] font-semibold text-neutral-400 uppercase">Input (stdin)</label>
+                  <label className="text-[9px] font-semibold text-neutral-400 uppercase">
+                    {t('code_playground.tests.custom_input')}
+                  </label>
                   <textarea
                     value={tc.stdin}
                     onChange={(e) => updateStudentTestCase(tc.id, 'stdin', e.target.value)}
                     className="w-full text-[11px] font-mono text-neutral-700 bg-white border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-blue-300 resize-none"
                     rows={2}
-                    placeholder="Input..."
+                    placeholder={t('code_playground.tests.custom_input_placeholder')}
                   />
                 </div>
                 <div>
-                  <label className="text-[9px] font-semibold text-neutral-400 uppercase">Expected Output</label>
+                  <label className="text-[9px] font-semibold text-neutral-400 uppercase">
+                    {t('code_playground.tests.expected')}
+                  </label>
                   <textarea
                     value={tc.expectedStdout}
                     onChange={(e) => updateStudentTestCase(tc.id, 'expectedStdout', e.target.value)}
                     className="w-full text-[11px] font-mono text-neutral-700 bg-white border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-blue-300 resize-none"
                     rows={2}
-                    placeholder="Expected output..."
+                    placeholder={t('code_playground.tests.expected_placeholder')}
                   />
                 </div>
               </div>
             </div>
-          ))}
+            )
+          })}
         </div>
       )}
     </div>
@@ -1734,10 +2041,14 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
 
     return (
       <div className="p-5 space-y-3 overflow-y-auto h-full">
-        {!results ? (
+        {executionError ? (
+          <div className="rounded-lg border border-red-100 bg-red-50 p-3 text-[12px] text-red-600">
+            {executionError}
+          </div>
+        ) : !results ? (
           <div className="flex flex-col items-center justify-center py-14 text-neutral-300">
             <Terminal size={24} className="mb-2" strokeWidth={1.5} />
-            <span className="text-[13px] text-neutral-400">Run your code to see output</span>
+            <span className="text-[13px] text-neutral-400">{t('code_playground.output.empty')}</span>
           </div>
         ) : (
           <>
@@ -1747,7 +2058,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
             {testCases.length > 0 && !isEditable && results && (
               <div className="rounded-lg p-3.5 border border-neutral-100 nice-shadow">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">Score</span>
+                  <span className="text-[11px] font-semibold text-neutral-400 uppercase tracking-wider">{t('code_playground.output.score')}</span>
                   <span className="text-[15px] font-bold text-neutral-800">{Math.round((passedCount / totalCount) * 100)}%</span>
                 </div>
                 <div className="w-full h-1.5 bg-neutral-100 rounded-full overflow-hidden">
@@ -1756,7 +2067,9 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                 <div className="flex items-center gap-1.5 mt-2">
                   <CheckCircle2 size={11} className={allPassed ? 'text-emerald-500' : 'text-amber-500'} />
                   <span className={`text-[11px] font-medium ${allPassed ? 'text-emerald-600' : 'text-amber-600'}`}>
-                    {allPassed ? 'All test cases passed' : `${passedCount} of ${totalCount} passed`}
+                    {allPassed
+                      ? t('code_playground.status.all_tests_passed')
+                      : t('code_playground.status.passed_count', { passed: passedCount, total: totalCount })}
                   </span>
                 </div>
               </div>
@@ -1769,7 +2082,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                   {r.passed ? <CheckCircle2 size={13} className="text-emerald-500" /> : <XCircle size={13} className="text-red-500" />}
                   <span className="text-[12px] font-semibold text-neutral-700">{r.label}</span>
                   <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${r.passed ? 'bg-emerald-100 text-emerald-600' : 'bg-red-100 text-red-600'}`}>
-                    {r.status?.description || (r.passed ? 'Accepted' : 'Failed')}
+                    {r.status?.description || (r.passed ? t('code_playground.status.accepted') : t('code_playground.status.failed'))}
                   </span>
                   <div className="ml-auto flex items-center gap-2">
                     {r.time && <span className="text-[10px] text-neutral-400 font-mono">{r.time}s</span>}
@@ -1779,7 +2092,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                 {r.actual_stdout != null && (
                   <div className="px-3.5 pb-2.5">
                     <div className="flex items-center justify-between mb-0.5">
-                      <label className="text-[9px] font-semibold text-neutral-400 uppercase tracking-wider">Output</label>
+                      <label className="text-[9px] font-semibold text-neutral-400 uppercase tracking-wider">{t('code_playground.tabs.output')}</label>
                       <CopyButton text={r.actual_stdout || ''} />
                     </div>
                     {isSqlLanguage && r.actual_stdout && r.actual_stdout.includes('|') ? (
@@ -1814,7 +2127,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                 )}
                 {!r.passed && r.expected_stdout && (
                   <div className="px-3.5 pb-2.5">
-                    <label className="text-[9px] font-semibold text-neutral-400 uppercase tracking-wider mb-0.5 block">Expected</label>
+                    <label className="text-[9px] font-semibold text-neutral-400 uppercase tracking-wider mb-0.5 block">{t('code_playground.output.expected')}</label>
                     <pre className="text-[11px] font-mono text-emerald-700 bg-emerald-50/50 border border-emerald-100 rounded-lg p-2 whitespace-pre-wrap nice-shadow">{r.expected_stdout}</pre>
                   </div>
                 )}
@@ -1841,7 +2154,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
     <NodeViewWrapper className="block-code-playground">
       <div
         ref={containerRef}
-        className="rounded-2xl overflow-hidden nice-shadow relative"
+        className="max-w-full rounded-2xl overflow-hidden nice-shadow relative"
       >
         {/* Feature 14: Confetti */}
         {showConfetti && (
@@ -1854,20 +2167,37 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
           />
         )}
 
+        <div className="grid grid-cols-2 border-b border-neutral-200 bg-white p-1 md:hidden">
+          <button
+            type="button"
+            onClick={() => setMobilePane('code')}
+            className={`rounded-lg px-3 py-2 text-xs font-semibold ${mobilePane === 'code' ? 'bg-neutral-900 text-white' : 'text-neutral-500'}`}
+          >
+            {t('code_playground.mobile.code')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobilePane('details')}
+            className={`rounded-lg px-3 py-2 text-xs font-semibold ${mobilePane === 'details' ? 'bg-neutral-900 text-white' : 'text-neutral-500'}`}
+          >
+            {t('code_playground.mobile.details')}
+          </button>
+        </div>
+
         {/* ── Split Layout ───────────────────────────────────── */}
-        <div className="flex relative" style={{ height: 560 }}>
+        <div className="flex h-[620px] min-w-0 flex-col overflow-hidden md:h-[560px] md:flex-row relative">
           {timedMode && !isEditable && !challengeStarted && (
             <div className="absolute inset-0 z-20 bg-[#1a1b26]/95 flex flex-col items-center justify-center gap-4">
               <Clock size={32} className="text-neutral-400" />
-              <span className="text-[14px] font-semibold text-neutral-200">Timed Challenge</span>
+              <span className="text-[14px] font-semibold text-neutral-200">{t('code_playground.timed.title')}</span>
               <span className="text-[12px] text-neutral-400">
-                You have {Math.floor(timedDurationMs / 60000)} minutes to complete this challenge.
+                {t('code_playground.timed.minutes', { count: Math.floor(timedDurationMs / 60000) })}
               </span>
               <button
                 onClick={() => { setChallengeStarted(true); setChallengeTimeLeft(timedDurationMs) }}
                 className="px-5 py-2.5 bg-white/10 hover:bg-white/15 text-neutral-200 rounded-lg text-[13px] font-semibold transition-all"
               >
-                Start Challenge
+                {t('code_playground.timed.start')}
               </button>
             </div>
           )}
@@ -1885,9 +2215,9 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
               },
             }}
             handleClasses={{
-              right: 'group',
+              right: 'group max-md:hidden',
             }}
-            className="flex flex-col min-w-0 bg-[#1a1b26] relative"
+            className={`${mobilePane === 'code' ? 'flex' : 'hidden'} max-md:!w-full max-md:!min-w-0 max-md:!max-w-none md:flex flex-col min-w-0 bg-[#1a1b26] relative`}
           >
             <div className="absolute right-0 top-0 bottom-0 w-[3px] z-10 hover:bg-blue-500/40 transition-colors bg-white/[0.06]" />
             {/* Header bar — dark */}
@@ -1914,19 +2244,36 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                     </button>
                     {showLangDropdown && (
                       <div className="absolute right-0 top-full mt-1 bg-[#24283b] rounded-lg py-1 z-50 max-h-60 overflow-y-auto w-44 border border-white/[0.08] shadow-xl">
-                        {PLAYGROUND_LANGUAGES.map((lang) => (
-                          <button
-                            key={lang.id}
-                            onClick={() => handleLanguageChange(lang.id)}
-                            className={`w-full text-left px-3.5 py-2 text-[12px] transition-colors ${
-                              lang.id === languageId
-                                ? 'bg-white/[0.08] text-neutral-200 font-semibold'
-                                : 'text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-300'
-                            }`}
-                          >
-                            {lang.name}
-                          </button>
-                        ))}
+                        {PLAYGROUND_LANGUAGES.map((lang) => {
+                          // Visible but unselectable when the executor has no
+                          // runtime for it — see getLanguageOptionState.
+                          const { disabled, note } = getLanguageOptionState(lang.id, {
+                            previewSupported: true,
+                            apiAdaptersSupported: true,
+                          })
+                          return (
+                            <button
+                              key={lang.id}
+                              onClick={() => handleLanguageChange(lang.id)}
+                              disabled={disabled}
+                              title={disabled ? `${lang.name} — ${note}` : undefined}
+                              className={`w-full text-left px-3.5 py-2 text-[12px] transition-colors flex items-center justify-between gap-2 ${
+                                disabled
+                                  ? 'text-neutral-600 cursor-not-allowed'
+                                  : lang.id === languageId
+                                    ? 'bg-white/[0.08] text-neutral-200 font-semibold'
+                                    : 'text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-300'
+                              }`}
+                            >
+                              <span className="truncate">{lang.name}</span>
+                              {disabled && (
+                                <span className="shrink-0 text-[9px] leading-none px-1.5 py-0.5 rounded-full bg-white/[0.06] text-neutral-500">
+                                  {note}
+                                </span>
+                              )}
+                            </button>
+                          )
+                        })}
                       </div>
                     )}
                   </div>
@@ -1946,8 +2293,33 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                 )}
               </div>
             </div>
+            {executionUnavailable && (
+              <div
+                id={runtimeWarningId}
+                role="alert"
+                className="border-b border-amber-400/20 bg-amber-400/10 px-4 py-2 text-[11px] font-medium leading-relaxed text-amber-200"
+              >
+                {sqlDatabaseRequired
+                  ? t('code_playground.errors.sqlite_required')
+                  : t(
+                    isEditable
+                      ? 'code_playground.errors.unsupported_runtime_editor'
+                      : 'code_playground.errors.unsupported_runtime_student',
+                    { language: getLanguageById(languageId)?.name || languageName || `ID ${languageId}` }
+                  )}
+              </div>
+            )}
+            {actionAvailabilityMessage && (
+              <div
+                id={actionAvailabilityWarningId}
+                role="alert"
+                className="border-b border-sky-400/20 bg-sky-400/10 px-4 py-2 text-[11px] font-medium leading-relaxed text-sky-100"
+              >
+                {actionAvailabilityMessage}
+              </div>
+            )}
             {/* File tabs — VS Code style */}
-            {additionalFiles.length > 0 && (
+            {editorFiles.length > 0 && (
               <div className="flex items-center bg-[#16161e] border-b border-white/[0.06] overflow-x-auto shrink-0">
                 <button
                   onClick={() => setActiveFileTab('main')}
@@ -1958,9 +2330,9 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                   }`}
                 >
                   <Code2 size={12} />
-                  main
+                  {isPreviewMode ? 'index.html' : 'main'}
                 </button>
-                {additionalFiles.map((file, i) => (
+                {editorFiles.map((file, i) => (
                   <button
                     key={i}
                     onClick={() => setActiveFileTab(i)}
@@ -2001,9 +2373,16 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                 )
               ) : (
                 <CodeMirror
-                  value={additionalFiles[activeFileTab as number]?.content || ''}
-                  onChange={isEditable ? (val: string) => updateAdditionalFile(activeFileTab as number, 'content', val) : undefined}
-                  editable={isEditable}
+                  value={editorFiles[activeFileTab as number]?.content || ''}
+                  onChange={
+                    isEditable
+                      ? (val: string) => updateAdditionalFile(activeFileTab as number, 'content', val)
+                      : useLearnerFiles
+                        ? (val: string) => updatePreviewFile(activeFileTab as number, val)
+                        : undefined
+                  }
+                  editable={isEditable || useLearnerFiles}
+                  extensions={fileExtensions}
                   height="100%"
                   style={{ ...cmStyles, height: '100%' }}
                   basicSetup={{
@@ -2028,26 +2407,34 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
               <div className="flex items-center gap-3 px-4 py-2.5">
                 <button
                   onClick={runCode}
-                  disabled={isRunning || isSubmitting || !accessToken}
+                  disabled={!canRun}
+                  aria-describedby={actionDescriptionIds}
                   className={`flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold transition-all ${
-                    isRunning || isSubmitting
+                    !canRun
                       ? 'bg-white/[0.06] text-neutral-500 cursor-not-allowed'
                       : 'bg-white/[0.10] hover:bg-white/[0.14] text-neutral-200'
                   }`}
                 >
-                  {isRunning ? (
+                  {isPreviewMode ? (
+                    <RotateCcw size={14} />
+                  ) : isRunning ? (
                     <Loader2 size={14} className="animate-spin" />
                   ) : (
                     <Play size={14} />
                   )}
-                  {isEditable ? 'Test Run' : 'Run'}
+                  {isPreviewMode
+                    ? t('code_playground.preview.refresh')
+                    : isEditable
+                      ? t('code_playground.actions.test_run')
+                      : t('code_playground.actions.run')}
                 </button>
-                {!isEditable && (
+                {!isEditable && !isPreviewMode && (
                   <button
                     onClick={submitChallenge}
-                    disabled={isRunning || isSubmitting || !accessToken || !challengeUuid}
+                    disabled={!canSubmit}
+                    aria-describedby={actionDescriptionIds}
                     className={`flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold transition-all ${
-                      isSubmitting
+                      !canSubmit
                         ? 'bg-emerald-500/10 text-emerald-700 cursor-not-allowed'
                         : 'bg-emerald-400 hover:bg-emerald-300 text-neutral-950'
                     }`}
@@ -2057,7 +2444,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                     ) : (
                       <ClipboardCheck size={14} />
                     )}
-                    Submit
+                    {t('code_playground.actions.submit')}
                   </button>
                 )}
                 <span className="text-[10px] text-neutral-500 hidden sm:inline">
@@ -2071,7 +2458,7 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
                 {allPassed && !isEditable && !isRunning && (
                   <div className="flex items-center gap-1.5">
                     <CheckCircle2 size={13} className="text-emerald-400" />
-                    <span className="text-[12px] font-semibold text-emerald-400">All passed</span>
+                    <span className="text-[12px] font-semibold text-emerald-400">{t('code_playground.status.all_passed')}</span>
                   </div>
                 )}
                 {timedMode && challengeStarted && !isEditable && (
@@ -2085,10 +2472,10 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
 
           {/* ── Right: Tabbed Panel ──────────────────────────── */}
           <div
-            className="flex-1 min-w-[240px] border-l border-neutral-200/60 bg-white flex flex-col"
+            className={`${mobilePane === 'details' ? 'flex' : 'hidden'} w-full min-w-0 flex-col bg-white md:flex md:flex-1 md:border-l md:border-neutral-200/60`}
           >
             {/* Tab bar */}
-            <div className="flex items-center border-b border-neutral-200/60 bg-white px-1 shrink-0">
+            <div className="flex items-center overflow-x-auto border-b border-neutral-200/60 bg-white px-1 shrink-0">
               {visibleTabs.map((tab) => (
                 <button
                   key={tab.id}
@@ -2112,15 +2499,24 @@ const CodePlaygroundComponent: React.FC = (props: any) => {
             {/* Tab content */}
             <div className="flex-1 overflow-hidden">
               {activeTab === 'description' && renderDescriptionTab()}
+              {activeTab === 'preview' && isPreviewMode && (
+                <LivePreview
+                  source={code}
+                  files={editorFiles}
+                  title={t('code_playground.preview.frame_title')}
+                  reloadNonce={previewNonce}
+                  onErrorCountChange={setPreviewErrorCount}
+                />
+              )}
               {activeTab === 'tests' && renderTestsTab()}
               {activeTab === 'output' && renderOutputTab()}
               {activeTab === 'history' && (
                 <div className="p-5 overflow-y-auto h-full">
                   <SubmissionHistory
-                    activityUuid={activityUuid}
-                    blockId={blockId}
+                    challengeUuid={challengeUuid}
                     accessToken={accessToken}
                     onRestoreCode={(restoredCode) => setCode(restoredCode)}
+                    refreshKey={historyRefreshKey}
                   />
                 </div>
               )}

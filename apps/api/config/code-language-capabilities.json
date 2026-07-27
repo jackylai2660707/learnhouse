@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "executor_language_ids": [50, 54, 62, 63, 71, 74],
+  "api_adapters": [
+    {
+      "language_id": 82,
+      "name": "SQL (SQLite)",
+      "executor_language_id": 71,
+      "requires": ["sqlite_db_path"]
+    }
+  ],
+  "preview_language_ids": [1000]
+}

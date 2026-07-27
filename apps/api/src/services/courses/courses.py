@@ -39,10 +39,14 @@ from src.security.superadmin import is_user_superadmin
 from src.services.courses.thumbnails import upload_thumbnail
 from src.services.search.normalization import LIKE_ESCAPE_CHAR, build_like_pattern
 from src.services.webhooks.dispatch import dispatch_webhooks
+from src.services.ai.pdf_build_jobs import ensure_course_not_in_active_pdf_build
 from fastapi import HTTPException, Request, UploadFile, status
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# The hook covers Course, Chapter, Activity, Block, and ordering/link rows
+# across specialized writers.
 
 
 async def get_course(
@@ -700,7 +704,7 @@ async def update_course_thumbnail(
     thumbnail_file: UploadFile | None = None,
     thumbnail_type: ThumbnailType = ThumbnailType.IMAGE,
 ):
-    statement = select(Course).where(Course.course_uuid == course_uuid)
+    statement = select(Course).where(Course.course_uuid == course_uuid).with_for_update()
     course = (await db_session.execute(statement)).scalars().first()
 
     name_in_disk = None
@@ -713,6 +717,7 @@ async def update_course_thumbnail(
 
     # RBAC check
     await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.UPDATE)
+    await ensure_course_not_in_active_pdf_build(course.id, db_session)
 
     # Get org uuid
     org_statement = select(Organization).where(Organization.id == course.org_id)
@@ -788,7 +793,7 @@ async def update_course(
     - Sensitive fields (public, open_to_contributors) require additional validation
     - Cannot change course access settings without proper permissions
     """
-    statement = select(Course).where(Course.course_uuid == course_uuid)
+    statement = select(Course).where(Course.course_uuid == course_uuid).with_for_update()
     course = (await db_session.execute(statement)).scalars().first()
 
     if not course:
@@ -799,6 +804,7 @@ async def update_course(
 
     # SECURITY: Require course ownership or admin role for updating courses
     await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.UPDATE)
+    await ensure_course_not_in_active_pdf_build(course.id, db_session)
 
     # SECURITY: Additional checks for sensitive access control fields
     sensitive_fields_updated = []
@@ -905,7 +911,7 @@ async def delete_course(
     current_user: PublicUser | AnonymousUser,
     db_session: AsyncSession,
 ):
-    statement = select(Course).where(Course.course_uuid == course_uuid)
+    statement = select(Course).where(Course.course_uuid == course_uuid).with_for_update()
     course = (await db_session.execute(statement)).scalars().first()
 
     if not course:
@@ -916,6 +922,7 @@ async def delete_course(
 
     # RBAC check
     await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.DELETE)
+    await ensure_course_not_in_active_pdf_build(course.id, db_session)
 
     # Feature usage
     await decrease_feature_usage("courses", course.org_id, db_session)

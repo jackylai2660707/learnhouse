@@ -11,6 +11,7 @@ import {
   ChevronLeft,
 } from 'lucide-react'
 import { getAPIUrl } from '@services/config/config'
+import { useTranslation } from 'react-i18next'
 
 interface Submission {
   id: string
@@ -31,18 +32,19 @@ interface HistoryResponse {
 }
 
 interface Props {
-  activityUuid: string
-  blockId: string
+  challengeUuid: string
   accessToken: string
   onRestoreCode: (code: string) => void
+  refreshKey?: number
 }
 
 export default function SubmissionHistory({
-  activityUuid,
-  blockId,
+  challengeUuid,
   accessToken,
   onRestoreCode,
+  refreshKey = 0,
 }: Props) {
+  const { t } = useTranslation()
   const [data, setData] = useState<HistoryResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -51,11 +53,11 @@ export default function SubmissionHistory({
   const limit = 10
 
   const fetchHistory = useCallback(async () => {
-    if (!activityUuid || !accessToken) return
+    if (!challengeUuid || !accessToken) return
     setLoading(true)
     setError(null)
     try {
-      const url = `${getAPIUrl()}code/submissions/history?activity_uuid=${encodeURIComponent(activityUuid)}&block_id=${encodeURIComponent(blockId)}&page=${page}&limit=${limit}`
+      const url = `${getAPIUrl()}coding-challenges/${encodeURIComponent(challengeUuid)}/state?page=${page}&limit=${limit}`
       const resp = await fetch(url, {
         headers: { Authorization: `Bearer ${accessToken}` },
       })
@@ -63,20 +65,20 @@ export default function SubmissionHistory({
       const json = await resp.json()
       setData(json)
     } catch (err: any) {
-      setError(err.message || 'Failed to load history')
+      setError(err.message || t('code_playground.history.load_error'))
     } finally {
       setLoading(false)
     }
-  }, [activityUuid, blockId, accessToken, page])
+  }, [challengeUuid, accessToken, page, refreshKey, t])
 
   useEffect(() => {
     fetchHistory()
   }, [fetchHistory])
 
-  if (!activityUuid) {
+  if (!challengeUuid) {
     return (
       <div className="text-sm text-neutral-400 text-center py-8">
-        Submission history is not available in this context.
+        {t('code_playground.history.unavailable')}
       </div>
     )
   }
@@ -97,7 +99,7 @@ export default function SubmissionHistory({
           onClick={fetchHistory}
           className="ml-2 underline text-neutral-500 hover:text-neutral-700"
         >
-          Retry
+          {t('code_playground.actions.retry')}
         </button>
       </div>
     )
@@ -106,7 +108,7 @@ export default function SubmissionHistory({
   if (!data || data.submissions.length === 0) {
     return (
       <div className="text-sm text-neutral-400 text-center py-8">
-        No submissions yet. Run your code to create a submission.
+        {t('code_playground.history.empty')}
       </div>
     )
   }
@@ -149,7 +151,7 @@ export default function SubmissionHistory({
               )}
 
               <span className="text-xs font-semibold text-neutral-700">
-                {sub.passed_tests}/{sub.total_tests} passed
+                {t('code_playground.history.passed_count', { passed: sub.passed_tests, total: sub.total_tests })}
               </span>
 
               {sub.execution_time_ms !== null && (
@@ -176,7 +178,7 @@ export default function SubmissionHistory({
                     className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-neutral-600 hover:text-neutral-800 bg-neutral-100 hover:bg-neutral-200 rounded-md transition-colors"
                   >
                     <RotateCcw size={12} />
-                    Restore this code
+                    {t('code_playground.history.restore')}
                   </button>
                 </div>
               </div>
@@ -196,17 +198,17 @@ export default function SubmissionHistory({
               className="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <ChevronLeft size={14} />
-              Previous
+              {t('code_playground.actions.previous')}
             </button>
             <span className="text-[11px] text-neutral-400">
-              Page {page} of {totalPages}
+              {t('code_playground.history.page', { page, total: totalPages })}
             </span>
             <button
               disabled={page >= totalPages}
               onClick={() => setPage((p) => p + 1)}
               className="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-700 disabled:opacity-30 disabled:cursor-not-allowed"
             >
-              Next
+              {t('code_playground.actions.next')}
               <ChevronRight size={14} />
             </button>
           </div>

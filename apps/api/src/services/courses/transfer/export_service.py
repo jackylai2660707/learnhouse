@@ -23,9 +23,15 @@ from src.db.courses.chapter_activities import ChapterActivity
 from src.db.courses.chapters import Chapter
 from src.db.courses.course_chapters import CourseChapter
 from src.db.courses.courses import Course
+from src.db.coding_challenges import (
+    CodingChallenge,
+    CodingChallengeTest,
+    CodingChallengeTestVisibility,
+)
 from src.db.organizations import Organization
 from src.db.users import PublicUser, AnonymousUser, APITokenUser
 from src.security.rbac import check_resource_access, AccessAction
+from src.services.coding_challenges.challenges import sanitize_coding_challenge_content
 
 from .models import ExportManifest, ExportCourseInfo
 from .storage_utils import read_file_content, list_directory, walk_directory
@@ -96,7 +102,10 @@ async def export_courses_batch(
                 detail=f"Course not found: {course_uuid}",
             )
 
-        await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
+        # Course archives contain a separate teacher-only manifest with coding
+        # challenge solutions and hidden tests, so read-only students must not
+        # be able to export them.
+        await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.UPDATE)
 
         if org is None:
             org_statement = select(Organization).where(Organization.id == course.org_id)
@@ -114,9 +123,11 @@ async def export_courses_batch(
     # Pre-load all DB data needed for ZIP building (batch queries)
     course_export_data = []
     for course in courses_to_export:
-        course_data, chapters = await _load_course_export_data(course, db_session)
+        course_data, chapters, challenge_secrets = await _load_course_export_data(course, db_session)
         # Extract plain values — can't access SQLModel objects from another thread
-        course_export_data.append((course.course_uuid, course.name, course_data, chapters))
+        course_export_data.append(
+            (course.course_uuid, course.name, course_data, chapters, challenge_secrets)
+        )
 
     # Phase 2: Build ZIP in a thread pool (file I/O — don't block event loop)
     org_uuid = org.org_uuid
@@ -128,7 +139,7 @@ async def export_courses_batch(
 async def _load_course_export_data(
     course: Course,
     db_session: AsyncSession,
-) -> tuple[dict, list]:
+) -> tuple[dict, list, list[dict]]:
     """
     Load all DB data needed to export a course. Runs on the main thread.
     Returns (course_data_dict, chapters_with_activities_and_blocks).
@@ -206,7 +217,7 @@ async def _load_course_export_data(
                 "name": activity.name,
                 "activity_type": activity.activity_type.value,
                 "activity_sub_type": activity.activity_sub_type.value if activity.activity_sub_type else None,
-                "content": copy.deepcopy(activity.content),
+                "content": sanitize_coding_challenge_content(activity.content),
                 "details": copy.deepcopy(activity.details),
                 "published": activity.published,
                 "order": ca.order,
@@ -220,14 +231,64 @@ async def _load_course_export_data(
                 blocks.append({
                     "block_uuid": block.block_uuid,
                     "block_type": block.block_type.value,
-                    "content": copy.deepcopy(block.content),
+                    "content": sanitize_coding_challenge_content(block.content),
                     "creation_date": block.creation_date,
                     "update_date": block.update_date,
                 })
             activities.append((activity_dict, blocks))
         chapters.append((chapter_dict, activities))
 
-    return course_data, chapters
+    challenges = (
+        await db_session.execute(
+            select(CodingChallenge).where(CodingChallenge.course_id == course.id)
+        )
+    ).scalars().all()
+    challenge_ids = [challenge.id for challenge in challenges if challenge.id is not None]
+    tests_by_challenge: dict[int, list[CodingChallengeTest]] = {}
+    if challenge_ids:
+        challenge_tests = (
+            await db_session.execute(
+                select(CodingChallengeTest)
+                .where(
+                    CodingChallengeTest.challenge_id.in_(challenge_ids),
+                    CodingChallengeTest.visibility
+                    == CodingChallengeTestVisibility.HIDDEN,
+                )
+                .order_by(CodingChallengeTest.order)
+            )
+        ).scalars().all()
+        for test in challenge_tests:
+            tests_by_challenge.setdefault(test.challenge_id, []).append(test)
+
+    activity_uuid_by_id = {
+        activity_dict["_id"]: activity_dict["activity_uuid"]
+        for _chapter, activities in chapters
+        for activity_dict, _blocks in activities
+    }
+    challenge_secrets = []
+    for challenge in challenges:
+        activity_uuid = activity_uuid_by_id.get(challenge.activity_id)
+        if not activity_uuid:
+            continue
+        challenge_secrets.append(
+            {
+                "activityUuid": activity_uuid,
+                "blockId": challenge.block_id,
+                "challengeUuid": challenge.challenge_uuid,
+                "solutionCode": challenge.solution_code,
+                "hiddenTestCases": [
+                    {
+                        "testUuid": test.test_uuid,
+                        "label": test.label,
+                        "stdin": test.stdin,
+                        "expectedStdout": test.expected_stdout,
+                    }
+                    for test in tests_by_challenge.get(challenge.id or 0, [])
+                ],
+            }
+        )
+
+    return course_data, chapters, challenge_secrets
 
 
 def _build_export_zip(
@@ -248,7 +309,7 @@ def _build_export_zip(
         with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             manifest_courses = []
 
-            for course_uuid, course_name, course_data, chapters in course_export_data:
+            for course_uuid, course_name, course_data, chapters, challenge_secrets in course_export_data:
                 course_path = f"courses/{course_uuid}"
                 course_content_path = f"{content_base}/{org_uuid}/courses/{course_uuid}"
 
@@ -256,6 +317,12 @@ def _build_export_zip(
                 zip_file.writestr(
                     f"{course_path}/course.json",
                     json.dumps(course_data, indent=2),
+                )
+                zip_file.writestr(
+                    f"{course_path}/coding-challenges.private.json",
+                    json.dumps(
+                        {"version": 1, "challenges": challenge_secrets}, indent=2
+                    ),
                 )
 
                 # Export thumbnail files

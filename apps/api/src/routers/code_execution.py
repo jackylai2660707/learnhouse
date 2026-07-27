@@ -1,15 +1,14 @@
 import asyncio
 import base64
 import io
-import logging
 import os
 import zipfile
+from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, Form
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from typing import Optional, Union
-import httpx
 
 from config.config import get_learnhouse_config
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -17,47 +16,69 @@ from src.core.events.database import get_db_session
 from src.db.users import APITokenUser, PublicUser
 from src.security.auth import get_authenticated_user
 from src.security.rbac.rbac import authorization_verify_based_on_roles_and_authorship
+from src.services.code_language_capabilities import (
+    API_EXECUTION_LANGUAGE_IDS,
+    API_LANGUAGE_ADAPTERS,
+    HTML_PREVIEW_LANGUAGE_ID,
+    PYTHON3_LANGUAGE_ID,
+    SQL_LANGUAGE_ID,
+)
+from src.services.judge0 import Judge0ServiceError, submit_judge0
 from src.services.utils.upload_content import upload_file
-
-logger = logging.getLogger(__name__)
-
 
 router = APIRouter()
 
-JUDGE0_TIMEOUT = 30.0
+def _validate_execution_language(language_id: int) -> None:
+    """Reject preview-only and unknown ids before any executor request."""
+    if language_id == HTML_PREVIEW_LANGUAGE_ID:
+        raise HTTPException(
+            status_code=400,
+            detail="HTML/CSS/JS exercises render in the browser and cannot be executed on the server",
+        )
+    if language_id not in API_EXECUTION_LANGUAGE_IDS:
+        raise HTTPException(status_code=422, detail="unsupported language_id")
 
-# SQL language ID (Judge0)
-SQL_LANGUAGE_ID = 82
-# We run SQL via Python's sqlite3 module
-PYTHON3_LANGUAGE_ID = 71
+
+def _validate_adapter_prerequisites(
+    language_id: int,
+    sqlite_db_path: str | None,
+) -> None:
+    adapter = API_LANGUAGE_ADAPTERS.get(language_id)
+    if not adapter:
+        return
+    if "sqlite_db_path" in adapter.get("requires", []) and not sqlite_db_path:
+        raise HTTPException(
+            status_code=400,
+            detail="執行 SQL 前請先上傳 SQLite 資料庫檔案。",
+        )
 
 
 class AdditionalFile(BaseModel):
-    name: str
-    content: str
+    name: str = Field(min_length=1, max_length=240)
+    content: str = Field(max_length=1_000_000)
 
 
 class ExecuteRequest(BaseModel):
-    language_id: int
-    source_code: str
-    stdin: str = ""
+    language_id: int = Field(ge=1)
+    source_code: str = Field(min_length=1, max_length=200_000)
+    stdin: str = Field(default="", max_length=100_000)
     sqlite_db_path: Optional[str] = None
-    additional_files: Optional[list[AdditionalFile]] = None
+    additional_files: Optional[list[AdditionalFile]] = Field(default=None, max_length=20)
 
 
 class TestCase(BaseModel):
-    id: str
-    label: str
-    stdin: str
-    expected_stdout: str
+    id: str = Field(min_length=1, max_length=100)
+    label: str = Field(min_length=1, max_length=200)
+    stdin: str = Field(max_length=100_000)
+    expected_stdout: str = Field(max_length=100_000)
 
 
 class ExecuteBatchRequest(BaseModel):
-    language_id: int
-    source_code: str
-    test_cases: list[TestCase]
+    language_id: int = Field(ge=1)
+    source_code: str = Field(min_length=1, max_length=200_000)
+    test_cases: list[TestCase] = Field(min_length=1, max_length=50)
     sqlite_db_path: Optional[str] = None
-    additional_files: Optional[list[AdditionalFile]] = None
+    additional_files: Optional[list[AdditionalFile]] = Field(default=None, max_length=20)
 
 
 def _get_judge0_config():
@@ -68,15 +89,6 @@ def _get_judge0_config():
             detail="Code execution is not configured. Set LEARNHOUSE_JUDGE0_API_URL.",
         )
     return config.judge0_config
-
-
-def _judge0_headers(judge0_cfg) -> dict:
-    headers = {"Content-Type": "application/json"}
-    if judge0_cfg.client_id:
-        headers["X-Judge0-Client-ID"] = judge0_cfg.client_id
-    if judge0_cfg.client_secret:
-        headers["X-Judge0-Client-Secret"] = judge0_cfg.client_secret
-    return headers
 
 
 def _wrap_sql_in_python(sql: str) -> str:
@@ -207,13 +219,50 @@ def _make_additional_files_zip(
 ) -> str:
     """Create a base64-encoded zip containing optional SQLite db and/or text files."""
     buf = io.BytesIO()
+    seen_names: set[str] = set()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         if db_bytes:
             zf.writestr("db.sqlite3", db_bytes)
+            seen_names.add("db.sqlite3")
         if text_files:
             for f in text_files:
-                zf.writestr(f["name"], f["content"])
+                normalized = f["name"].replace("\\", "/")
+                path = PurePosixPath(normalized)
+                if (
+                    path.is_absolute()
+                    or not path.parts
+                    or any(part in {"", ".", ".."} for part in path.parts)
+                    or "\x00" in normalized
+                    or normalized in seen_names
+                    or normalized == "db.sqlite3"
+                ):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="附加檔案名稱無效或重複。",
+                    )
+                seen_names.add(normalized)
+                zf.writestr(normalized, f["content"])
     return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _judge0_http_exception(error: Judge0ServiceError) -> HTTPException:
+    messages = {
+        "judge0_request_too_large": "程式或測試資料超出允許大小，請縮短後再試。",
+        "judge0_submission_rejected": "程式執行請求格式不受支援，請檢查語言和附加檔案。",
+        "judge0_timeout": "程式執行服務逾時，請稍後再試。",
+        "judge0_rate_limited": "程式執行服務目前繁忙，請稍後再試。",
+        "judge0_auth_failed": "程式執行服務暫時不可用，請通知管理員。",
+        "judge0_invalid_response": "程式執行服務回應異常，請稍後再試。",
+        "judge0_unavailable": "程式執行服務暫時不可用，請稍後再試。",
+    }
+    return HTTPException(
+        status_code=error.http_status,
+        detail={
+            "code": error.code,
+            "message": messages.get(error.code, messages["judge0_unavailable"]),
+            "retryable": error.retryable,
+        },
+    )
 
 
 async def _submit_single(
@@ -223,24 +272,16 @@ async def _submit_single(
     stdin: str,
     additional_files: Optional[str] = None,
 ) -> dict:
-    """Single submission with wait=true."""
-    url = f"{judge0_cfg.api_url}/submissions?wait=true"
-    payload = {
-        "language_id": language_id,
-        "source_code": source_code,
-        "stdin": stdin,
-    }
-    if additional_files:
-        payload["additional_files"] = additional_files
-    headers = _judge0_headers(judge0_cfg)
-    logger.info(f"Judge0 POST {url} headers={list(headers.keys())}")
-    async with httpx.AsyncClient(timeout=JUDGE0_TIMEOUT) as client:
-        resp = await client.post(url, json=payload, headers=headers)
-        logger.info(f"Judge0 response: status={resp.status_code}")
-        if resp.status_code not in (200, 201):
-            logger.error(f"Judge0 error: {resp.text}")
-            raise HTTPException(status_code=resp.status_code, detail=f"Judge0 error: {resp.text}")
-        return resp.json()
+    try:
+        return await submit_judge0(
+            judge0_cfg,
+            language_id=language_id,
+            source_code=source_code,
+            stdin=stdin,
+            additional_files=additional_files,
+        )
+    except Judge0ServiceError as exc:
+        raise _judge0_http_exception(exc) from exc
 
 
 @router.post(
@@ -262,6 +303,8 @@ async def execute_code(
     current_user: Union[PublicUser, APITokenUser] = Depends(get_authenticated_user),
     db_session: AsyncSession = Depends(get_db_session),
 ):
+    _validate_execution_language(body.language_id)
+    _validate_adapter_prerequisites(body.language_id, body.sqlite_db_path)
     judge0_cfg = _get_judge0_config()
 
     language_id = body.language_id
@@ -309,6 +352,8 @@ async def execute_batch(
     current_user: Union[PublicUser, APITokenUser] = Depends(get_authenticated_user),
     db_session: AsyncSession = Depends(get_db_session),
 ):
+    _validate_execution_language(body.language_id)
+    _validate_adapter_prerequisites(body.language_id, body.sqlite_db_path)
     judge0_cfg = _get_judge0_config()
 
     language_id = body.language_id

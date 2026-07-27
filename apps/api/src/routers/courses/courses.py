@@ -112,7 +112,7 @@ router = APIRouter(dependencies=[Depends(require_courses_feature)])
     description=(
         "Export multiple courses (up to 20 per request) as a single ZIP archive. "
         "All specified courses must belong to the same organization and the caller "
-        "must have read access to each course."
+        "must have update access to each course."
     ),
     responses={
         200: {"description": "ZIP archive containing the exported courses", "content": {"application/zip": {}}},
@@ -139,7 +139,7 @@ async def api_export_courses_batch(
     ```
 
     **Required Permissions:**
-    - Read access to all specified courses
+    - Update access to all specified courses
     - All courses must belong to the same organization
     """
     from datetime import datetime
@@ -654,7 +654,7 @@ async def api_export_course(
     into any LearnHouse instance.
 
     **Required Permissions:**
-    - Read access to the course
+    - Update access to the course
     """
     from datetime import datetime
 

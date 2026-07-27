@@ -1,3 +1,5 @@
+import copy
+
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlalchemy import desc
@@ -12,6 +14,10 @@ from typing import List, Optional
 from src.security.rbac import check_resource_access, AccessAction
 from src.security.features_utils.usage import check_feature_access
 from src.services.webhooks.dispatch import dispatch_webhooks
+from src.services.coding_challenges.challenges import (
+    sanitize_coding_challenge_content,
+    sync_coding_challenges_for_activity,
+)
 
 # Maximum number of versions to keep per activity
 # Change this constant to adjust how many saves are stored
@@ -115,7 +121,7 @@ async def get_activity_versions(
             detail="Course not found",
         )
 
-    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.UPDATE)
 
     # Get versions with user info
     statement = (
@@ -135,7 +141,7 @@ async def get_activity_versions(
             activity_id=version.activity_id,
             org_id=version.org_id,
             version_number=version.version_number,
-            content=version.content,
+            content=sanitize_coding_challenge_content(version.content),
             created_by_id=version.created_by_id,
             created_at=version.created_at,
             created_by_username=user.username if user else None,
@@ -179,7 +185,7 @@ async def get_activity_version(
             detail="Course not found",
         )
 
-    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.UPDATE)
 
     # Get specific version with user info
     statement = (
@@ -204,7 +210,7 @@ async def get_activity_version(
         activity_id=version.activity_id,
         org_id=version.org_id,
         version_number=version.version_number,
-        content=version.content,
+        content=sanitize_coding_challenge_content(version.content),
         created_by_id=version.created_by_id,
         created_at=version.created_at,
         created_by_username=user.username if user else None,
@@ -319,8 +325,15 @@ async def restore_activity_version(
     user_id = current_user.id if hasattr(current_user, 'id') else None
     await create_activity_version(activity, user_id, db_session)
 
-    # Restore content and update metadata
-    activity.content = version.content
+    # Restore through the challenge sync boundary so legacy version snapshots
+    # migrate solutions and hidden tests to durable protected rows.
+    restored_content = await sync_coding_challenges_for_activity(
+        activity,
+        course,
+        copy.deepcopy(version.content),
+        db_session,
+    )
+    activity.content = sanitize_coding_challenge_content(restored_content)
     activity.current_version = activity.current_version + 1
     activity.update_date = str(datetime.now())
     activity.last_modified_by_id = user_id

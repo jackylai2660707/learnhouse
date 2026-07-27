@@ -4,6 +4,7 @@ Handles importing courses from ZIP packages
 Supports both local filesystem and S3/R2 cloud storage
 """
 
+import copy
 import json
 import os
 import shutil
@@ -32,6 +33,10 @@ from src.db.resource_authors import (
 from src.db.users import PublicUser, AnonymousUser, APITokenUser
 from src.security.rbac import check_resource_access, AccessAction
 from src.security.features_utils.usage import check_limits_with_usage, increase_feature_usage
+from src.services.coding_challenges.challenges import (
+    remap_coding_challenge_identifiers,
+    sync_coding_challenges_for_activity,
+)
 
 from .models import (
     ImportAnalysisResponse,
@@ -396,19 +401,17 @@ async def import_courses(
 
             # Use a savepoint so we can rollback just this course on failure
             # without losing previously imported courses in the batch
-            nested = db_session.begin_nested()
             try:
-                new_course = await _import_single_course(
-                    course_path=course_paths[course_uuid],
-                    organization=organization,
-                    current_user=current_user,
-                    options=options,
-                    db_session=db_session,
-                    new_course_uuid=new_course_uuid,
-                )
-                nested.commit()
+                async with db_session.begin_nested():
+                    new_course = await _import_single_course(
+                        course_path=course_paths[course_uuid],
+                        organization=organization,
+                        current_user=current_user,
+                        options=options,
+                        db_session=db_session,
+                        new_course_uuid=new_course_uuid,
+                    )
             except Exception:
-                nested.rollback()
                 # Clean up any files/S3 objects written for the failed course
                 delete_storage_directory(new_course_content_path)
                 raise
@@ -551,6 +554,18 @@ async def _import_single_course(
     db_session.add(resource_author)
     await db_session.flush()
 
+    challenge_secrets: list[dict] = []
+    challenge_secrets_path = os.path.join(
+        course_path, "coding-challenges.private.json"
+    )
+    if os.path.exists(challenge_secrets_path):
+        with open(challenge_secrets_path, "r") as secrets_file:
+            secrets_payload = json.load(secrets_file)
+        if isinstance(secrets_payload, dict) and isinstance(
+            secrets_payload.get("challenges"), list
+        ):
+            challenge_secrets = secrets_payload["challenges"]
+
     # Import chapters
     chapters_dir = os.path.join(course_path, "chapters")
     if os.path.exists(chapters_dir):
@@ -575,6 +590,7 @@ async def _import_single_course(
                 new_course_path=new_course_path,
                 organization=organization,
                 db_session=db_session,
+                challenge_secrets=challenge_secrets,
             )
 
     return new_course
@@ -587,6 +603,7 @@ async def _import_chapter(
     new_course_path: str,
     organization: Organization,
     db_session: AsyncSession,
+    challenge_secrets: list[dict] | None = None,
 ) -> Chapter:
     """
     Import a chapter and its activities.
@@ -644,9 +661,55 @@ async def _import_chapter(
                 new_course_path=new_course_path,
                 organization=organization,
                 db_session=db_session,
+                original_activity_uuid=original_activity_uuid,
+                challenge_secrets=challenge_secrets,
             )
 
     return new_chapter
+
+
+def _restore_coding_challenge_secrets(
+    content: object,
+    original_activity_uuid: str | None,
+    challenge_secrets: list[dict],
+) -> None:
+    """Merge teacher-only transfer data before imported IDs are remapped."""
+    if not original_activity_uuid:
+        return
+
+    secrets_by_identity = {
+        (item.get("challengeUuid"), item.get("blockId")): item
+        for item in challenge_secrets
+        if isinstance(item, dict)
+        and item.get("activityUuid") == original_activity_uuid
+        and isinstance(item.get("challengeUuid"), str)
+        and isinstance(item.get("blockId"), str)
+    }
+
+    def visit(value: object) -> None:
+        if isinstance(value, list):
+            for child in value:
+                visit(child)
+            return
+        if not isinstance(value, dict):
+            return
+        if value.get("type") == "blockCode":
+            attrs = value.get("attrs")
+            if isinstance(attrs, dict):
+                secret = secrets_by_identity.get(
+                    (attrs.get("challengeUuid"), attrs.get("id"))
+                )
+                if secret is not None:
+                    solution_code = secret.get("solutionCode")
+                    hidden_tests = secret.get("hiddenTestCases")
+                    if isinstance(solution_code, str):
+                        attrs["solutionCode"] = solution_code
+                    if isinstance(hidden_tests, list):
+                        attrs["hiddenTestCases"] = hidden_tests
+        for child in value.values():
+            visit(child)
+
+    visit(content)
 
 
 async def _import_activity(
@@ -657,6 +720,8 @@ async def _import_activity(
     new_course_path: str,
     organization: Organization,
     db_session: AsyncSession,
+    original_activity_uuid: str | None = None,
+    challenge_secrets: list[dict] | None = None,
 ) -> Activity:
     """
     Import an activity and its blocks/files.
@@ -680,7 +745,15 @@ async def _import_activity(
             pass
 
     # Clone content (will update block references)
-    new_content = dict(activity_data.get("content", {})) if activity_data.get("content") else {}
+    source_content = (
+        copy.deepcopy(activity_data.get("content", {}))
+        if activity_data.get("content")
+        else {}
+    )
+    _restore_coding_challenge_secrets(
+        source_content, original_activity_uuid, challenge_secrets or []
+    )
+    new_content = remap_coding_challenge_identifiers(source_content)
     new_details = dict(activity_data.get("details", {})) if activity_data.get("details") else {}
 
     new_activity = Activity(
@@ -781,6 +854,13 @@ async def _import_activity(
                 await db_session.flush()
             except json.JSONDecodeError:
                 pass  # Keep original content if parsing fails
+
+    if isinstance(new_activity.content, dict):
+        new_activity.content = await sync_coding_challenges_for_activity(
+            new_activity, new_course, new_activity.content, db_session
+        )
+        db_session.add(new_activity)
+        await db_session.flush()
 
     return new_activity
 

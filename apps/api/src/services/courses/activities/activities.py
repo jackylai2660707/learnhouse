@@ -25,12 +25,19 @@ from src.services.courses.locks import (
     is_locked_for_user,
     is_org_admin,
 )
+from src.services.coding_challenges.challenges import sanitize_coding_challenge_content
 
 logger = logging.getLogger(__name__)
 
 # Module-level set to hold strong references to background embedding tasks,
 # preventing them from being garbage-collected before they complete.
 _embedding_tasks: set = set()
+
+
+def _safe_activity_read(activity: Activity) -> ActivityRead:
+    activity_read = ActivityRead.model_validate(activity)
+    activity_read.content = sanitize_coding_challenge_content(activity_read.content)
+    return activity_read
 
 
 ####################################################
@@ -86,6 +93,12 @@ async def create_activity(
             detail="Activity creation failed: could not retrieve activity ID",
         )
 
+    if isinstance(activity.content, dict):
+        from src.services.coding_challenges.challenges import sync_coding_challenges_for_activity
+        activity.content = await sync_coding_challenges_for_activity(
+            activity, course, activity.content, db_session
+        )
+
     # Determine insertion order using MAX to avoid loading all rows
     max_order = (await db_session.execute(
         select(func.max(ChapterActivity.order)).where(
@@ -110,7 +123,7 @@ async def create_activity(
     await db_session.commit()
     await db_session.refresh(activity)
 
-    return ActivityRead.model_validate(activity)
+    return _safe_activity_read(activity)
 
 
 async def get_activity(
@@ -147,8 +160,9 @@ async def get_activity(
         db_session=db_session
     )
 
-    activity_read = ActivityRead.model_validate(activity)
-    activity_read.content = activity_read.content if has_paid_access else { "paid_access": False }
+    activity_read = _safe_activity_read(activity)
+    if not has_paid_access:
+        activity_read.content = {"paid_access": False}
     # Include last modified user info
     activity_read.last_modified_by_username = last_modified_user.username if last_modified_user else None
 
@@ -216,10 +230,9 @@ async def get_editor_bootstrap(
         db_session=db_session,
     )
 
-    activity_read = ActivityRead.model_validate(activity)
-    activity_read.content = (
-        activity_read.content if has_paid_access else {"paid_access": False}
-    )
+    activity_read = _safe_activity_read(activity)
+    if not has_paid_access:
+        activity_read.content = {"paid_access": False}
     activity_read.last_modified_by_username = (
         last_modified_user.username if last_modified_user else None
     )
@@ -353,7 +366,7 @@ async def get_activityby_id(
     # RBAC check
     await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
 
-    return ActivityRead.model_validate(activity)
+    return _safe_activity_read(activity)
 
 
 async def update_activity(
@@ -435,13 +448,18 @@ async def update_activity(
             lambda t: logger.error("Embedding task failed: %s", t.exception()) if t.exception() else None
         )
 
-    activity = ActivityRead.model_validate(activity)
+    activity = _safe_activity_read(activity)
 
     return activity
 
 
 async def _trigger_course_embedding(course_id: int, org_id: int) -> None:
     """Background task to re-index course embeddings after content update."""
+    from src.services.ai.rag.embedding_service import (
+        EmbeddingUnavailableError,
+        StaleCourseIndexError,
+    )
+
     try:
         from src.core.events.database import get_db_session
         from src.services.ai.rag.embedding_service import embed_course_content
@@ -451,7 +469,31 @@ async def _trigger_course_embedding(course_id: int, org_id: int) -> None:
             if not course:
                 logger.warning("Skipping embedding for deleted course %d", course_id)
                 return
-            await embed_course_content(course_id, org_id, session)
+            result = await embed_course_content(course_id, org_id, session)
+            if result.degraded:
+                logger.error(
+                    "rag.background_index.degraded course_id=%d reason=%s "
+                    "— course indexed with lexical hashes, not embeddings",
+                    course_id,
+                    result.degraded_reason,
+                )
+    except StaleCourseIndexError:
+        # A newer edit/index won the database-wide course lock. Its content is
+        # authoritative, so this older task must end without another overwrite.
+        logger.info(
+            "rag.background_index.stale_discarded course_id=%d",
+            course_id,
+        )
+    except EmbeddingUnavailableError as e:
+        # Not "non-critical": the course's RAG index is now stale, silently.
+        # Loud enough to be found without reading every warning in the log.
+        logger.error(
+            "rag.background_index.embeddings_unavailable course_id=%d code=%s "
+            "— RAG index for this course is now STALE: %s",
+            course_id,
+            e.code,
+            e,
+        )
     except Exception as e:
         logger.warning("Background embedding update failed (non-critical): %s", e)
 
@@ -544,4 +586,4 @@ async def get_activities(
     _, chapter, course = results[0]
     await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
 
-    return [ActivityRead.model_validate(activity) for activity, _, _ in results]
+    return [_safe_activity_read(activity) for activity, _, _ in results]
