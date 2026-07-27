@@ -1,4 +1,5 @@
 from datetime import datetime
+import logging
 from uuid import uuid4
 
 from fastapi import HTTPException, Request, status
@@ -13,12 +14,14 @@ from src.db.users import PublicUser
 from src.security.auth import resolve_acting_user_id
 from src.security.features_utils.usage import reserve_ai_credit
 from src.security.rbac import AccessAction, check_resource_access
-from src.services.ai.base import generate_openai_compatible_image
+from src.services.ai.base import ImageGenerationProviderError, generate_openai_compatible_image
 from src.services.ai.schemas.images import GenerateImageRequest, GenerateImageResponse
 from src.services.blocks.schemas.files import BlockFile
 from src.services.email.utils import get_base_url_from_request
 from src.services.security.rate_limiting import enforce_ai_rate_limit
 from src.services.utils.upload_content import upload_content
+
+logger = logging.getLogger(__name__)
 
 
 def _request_base_url(request: Request) -> str:
@@ -71,9 +74,30 @@ async def generate_activity_image_block(
         from src.security.features_utils.usage import refund_ai_credit
 
         refund_ai_credit(org.id or image_request.org_id, 3)
+        error_code = "ai_image_unavailable"
+        retryable = True
+        provider_status = None
+        if isinstance(exc, ImageGenerationProviderError):
+            error_code = exc.code
+            retryable = exc.retryable
+            provider_status = exc.status_code
+        logger.warning(
+            "ai.image.generation_failed",
+            extra={
+                "integration": "ai_image",
+                "operation": "create_activity_image",
+                "error_code": error_code,
+                "provider_status": provider_status,
+                "retryable": retryable,
+            },
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Image generation failed: {str(exc)}",
+            detail={
+                "code": error_code,
+                "message": "AI 生圖暫時不可用，你可以稍後重試或先手動上傳圖片。",
+                "retryable": retryable,
+            },
         ) from exc
 
     if image_format == "jpeg":

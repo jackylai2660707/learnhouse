@@ -1,19 +1,42 @@
 from dataclasses import dataclass
-from typing import Dict, Any, AsyncGenerator, Iterable
+from typing import Dict, Any, AsyncGenerator, Iterable, Optional
 from uuid import uuid4
 from datetime import datetime, timezone
+import io
 import logging
+import binascii
 import redis
 import json
 import asyncio
+import time
 import httpx
 from google import genai
+from PIL import Image, UnidentifiedImageError
 
 from config.config import get_learnhouse_config
+from src.services.ai.assignment_config import normalize_openai_base_url
+from src.services.utils.ssrf_guard import (
+    SSRFBlockedError,
+    assert_connected_peer_allowed,
+    resolve_and_validate_url,
+)
 
 logger = logging.getLogger(__name__)
 
 LH_CONFIG = get_learnhouse_config()
+
+AI_TEXT_TIMEOUT = httpx.Timeout(120.0, connect=10.0, write=30.0, pool=10.0)
+# Embeddings are a bulk operation, not an interactive one: a reindex sends a
+# whole batch of chunks in one request. On the self-hosted CPU backend a batch
+# takes proportionally longer than any chat completion, and at 120s the client
+# gave up on work the server then completed — the retry re-ran the same batch
+# and timed out identically, so a reindex could never finish.
+AI_EMBEDDING_TIMEOUT = httpx.Timeout(600.0, connect=10.0, write=60.0, pool=10.0)
+AI_IMAGE_TIMEOUT = httpx.Timeout(240.0, connect=10.0, write=30.0, pool=10.0)
+AI_IMAGE_DOWNLOAD_TIMEOUT = httpx.Timeout(180.0, connect=10.0, write=10.0, pool=10.0)
+MAX_GENERATED_IMAGE_BYTES = 25 * 1024 * 1024
+MIN_GENERATED_IMAGE_DIMENSION = 64
+MAX_GENERATED_IMAGE_DIMENSION = 4096
 
 
 @dataclass
@@ -26,12 +49,81 @@ class _AITextChunk:
     text: str
 
 
+@dataclass
+class _AIEmbedding:
+    values: list[float]
+
+
+@dataclass
+class _AIEmbeddingResponse:
+    embeddings: list[_AIEmbedding]
+
+
+@dataclass(frozen=True)
+class AIProviderError(Exception):
+    code: str
+    status_code: int | None = None
+    retryable: bool = True
+
+
+class ImageGenerationProviderError(AIProviderError):
+    """Safe image-provider error without raw response content."""
+
+
+def _safe_provider_error(exc: Exception, *, operation: str) -> AIProviderError:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        if status_code in {400, 404, 422}:
+            code = f"ai_{operation}_request_rejected"
+            retryable = False
+        elif status_code in {401, 403}:
+            code = f"ai_{operation}_auth_failed"
+            retryable = False
+        elif status_code == 429:
+            code = f"ai_{operation}_rate_limited"
+            retryable = True
+        else:
+            code = f"ai_{operation}_unavailable"
+            retryable = True
+        return AIProviderError(code, status_code=status_code, retryable=retryable)
+    if isinstance(exc, httpx.TimeoutException):
+        return AIProviderError(f"ai_{operation}_timeout", retryable=True)
+    if isinstance(exc, (httpx.TransportError, SSRFBlockedError)):
+        return AIProviderError(f"ai_{operation}_unavailable", retryable=True)
+    return AIProviderError(f"ai_{operation}_invalid_response", retryable=True)
+
+
 def _get_config_value(config: Any, key: str, default: Any = None) -> Any:
     if config is None:
         return default
     if isinstance(config, dict):
         return config.get(key, default)
     return getattr(config, key, default)
+
+
+def _looks_like_response_format_rejection(exc: httpx.HTTPStatusError) -> bool:
+    if exc.response.status_code not in {400, 422}:
+        return False
+    body = (exc.response.text or "").lower()
+    return "response_format" in body or "json_object" in body
+
+
+def _rejected_optional_openai_params(
+    exc: httpx.HTTPStatusError,
+    payload: dict[str, Any],
+) -> list[str]:
+    if exc.response.status_code not in {400, 422}:
+        return []
+
+    body = (exc.response.text or "").lower()
+    rejected: list[str] = []
+    if "response_format" in payload and ("response_format" in body or "json_object" in body):
+        rejected.append("response_format")
+    if "temperature" in payload and "temperature" in body:
+        rejected.append("temperature")
+    if "max_tokens" in payload and ("max_tokens" in body or "max completion tokens" in body):
+        rejected.append("max_tokens")
+    return rejected
 
 
 def _part_to_openai_content(part: Any) -> list[dict[str, Any]]:
@@ -92,10 +184,11 @@ def _gemini_contents_to_openai_messages(contents: Any) -> list[dict[str, Any]]:
 
 
 class _OpenAICompatibleModels:
-    def __init__(self, base_url: str, api_key: str, model: str):
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str, api_key: str, model: str, embedding_model: str | None = None):
+        self.base_url = normalize_openai_base_url(base_url)
         self.api_key = api_key
         self.model = model
+        self.embedding_model = embedding_model
 
     def _payload(self, model: str | None, contents: Any, config: Any = None, stream: bool = False) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -119,63 +212,294 @@ class _OpenAICompatibleModels:
         return payload
 
     def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        # An empty key means "this endpoint needs no auth" — the self-hosted
+        # embedding service on the internal network is the case in point.
+        # Sending a bare "Bearer " is an illegal header value and httpx
+        # refuses to send the request at all.
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
     def generate_content(self, *, model: str | None = None, contents: Any = None, config: Any = None) -> _AITextResponse:
-        response = httpx.post(
-            f"{self.base_url}/chat/completions",
-            headers=self._headers(),
-            json=self._payload(model, contents, config, stream=False),
-            timeout=120.0,
-        )
-        response.raise_for_status()
-        data = response.json()
-        text = (
-            data.get("choices", [{}])[0]
-            .get("message", {})
-            .get("content")
-            or data.get("choices", [{}])[0].get("text")
-            or ""
-        )
+        payload = self._payload(model, contents, config, stream=False)
+        removed_params: set[str] = set()
+        while True:
+            try:
+                response = httpx.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self._headers(),
+                    json=payload,
+                    timeout=AI_TEXT_TIMEOUT,
+                )
+                response.raise_for_status()
+                break
+            except httpx.HTTPStatusError as exc:
+                rejected_params = [
+                    key for key in _rejected_optional_openai_params(exc, payload)
+                    if key not in removed_params
+                ]
+                if not rejected_params:
+                    error = _safe_provider_error(exc, operation="text")
+                    logger.warning(
+                        "ai.provider.request_failed",
+                        extra={
+                            "integration": "ai_text",
+                            "operation": "generate_content",
+                            "model": self.model,
+                            "provider_status": error.status_code,
+                            "error_code": error.code,
+                            "retryable": error.retryable,
+                        },
+                    )
+                    raise error from exc
+                removed_params.update(rejected_params)
+                payload = dict(payload)
+                for key in rejected_params:
+                    payload.pop(key, None)
+                logger.warning(
+                    "ai.provider.optional_parameters_rejected",
+                    extra={
+                        "integration": "ai_text",
+                        "operation": "generate_content",
+                        "model": self.model,
+                        "rejected_parameters": rejected_params,
+                    },
+                )
+                continue
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                error = _safe_provider_error(exc, operation="text")
+                logger.warning(
+                    "ai.provider.request_failed",
+                    extra={
+                        "integration": "ai_text",
+                        "operation": "generate_content",
+                        "model": self.model,
+                        "provider_status": error.status_code,
+                        "error_code": error.code,
+                        "retryable": error.retryable,
+                    },
+                )
+                raise error from exc
+            except AIProviderError:
+                raise
+
+        try:
+            data = response.json()
+            choices = data.get("choices") if isinstance(data, dict) else None
+            first_choice = choices[0] if isinstance(choices, list) and choices else None
+            text = (
+                first_choice.get("message", {}).get("content")
+                or first_choice.get("text")
+                if isinstance(first_choice, dict)
+                else ""
+            )
+        except (AttributeError, IndexError, TypeError, ValueError) as exc:
+            raise AIProviderError("ai_text_invalid_response") from exc
+        if not isinstance(text, str) or not text.strip():
+            raise AIProviderError("ai_text_empty_response")
         return _AITextResponse(text=text)
 
     def generate_content_stream(self, *, model: str | None = None, contents: Any = None, config: Any = None) -> Iterable[_AITextChunk]:
-        with httpx.Client(timeout=None) as client:
-            with client.stream(
-                "POST",
-                f"{self.base_url}/chat/completions",
+        try:
+            with httpx.Client(timeout=AI_TEXT_TIMEOUT) as client:
+                with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    headers=self._headers(),
+                    json=self._payload(model, contents, config, stream=True),
+                ) as response:
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        if line.startswith("data:"):
+                            line = line[5:].strip()
+                        if line == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        choice = (data.get("choices") or [{}])[0]
+                        text = (
+                            choice.get("delta", {}).get("content")
+                            or choice.get("message", {}).get("content")
+                            or choice.get("text")
+                            or ""
+                        )
+                        if text:
+                            yield _AITextChunk(text=text)
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.TransportError) as exc:
+            error = _safe_provider_error(exc, operation="text_stream")
+            logger.warning(
+                "ai.provider.request_failed",
+                extra={
+                    "integration": "ai_text",
+                    "operation": "generate_content_stream",
+                    "model": self.model,
+                    "provider_status": error.status_code,
+                    "error_code": error.code,
+                    "retryable": error.retryable,
+                },
+            )
+            raise error from exc
+
+    def embed_content(self, *, model: str | None = None, contents: Any = None, config: Any = None) -> _AIEmbeddingResponse:
+        requested_model = model if model and not model.startswith("gemini-") else None
+        embedding_model = self.embedding_model or requested_model or "text-embedding-3-small"
+        input_texts = contents or []
+        if isinstance(input_texts, str):
+            input_texts = [input_texts]
+
+        payload: dict[str, Any] = {
+            "model": embedding_model,
+            "input": input_texts,
+        }
+
+        dimensions = _get_config_value(config, "output_dimensionality")
+        if dimensions:
+            payload["dimensions"] = dimensions
+
+        try:
+            response = httpx.post(
+                f"{self.base_url}/embeddings",
                 headers=self._headers(),
-                json=self._payload(model, contents, config, stream=True),
-            ) as response:
-                response.raise_for_status()
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    if line.startswith("data:"):
-                        line = line[5:].strip()
-                    if line == "[DONE]":
-                        break
-                    try:
-                        data = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    choice = (data.get("choices") or [{}])[0]
-                    text = (
-                        choice.get("delta", {}).get("content")
-                        or choice.get("message", {}).get("content")
-                        or choice.get("text")
-                        or ""
-                    )
-                    if text:
-                        yield _AITextChunk(text=text)
+                json=payload,
+                timeout=AI_EMBEDDING_TIMEOUT,
+            )
+            response.raise_for_status()
+            data = response.json()
+            items = data.get("data") if isinstance(data, dict) else None
+            if not isinstance(items, list):
+                raise ValueError("missing embedding data")
+            embeddings = [
+                _AIEmbedding(values=list(item.get("embedding") or []))
+                for item in sorted(items, key=lambda item: item.get("index", 0))
+                if isinstance(item, dict)
+            ]
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.TransportError) as exc:
+            error = _safe_provider_error(exc, operation="embedding")
+            logger.warning(
+                "ai.provider.request_failed",
+                extra={
+                    "integration": "ai_embedding",
+                    "operation": "embed_content",
+                    "model": embedding_model,
+                    "provider_status": error.status_code,
+                    "error_code": error.code,
+                    "retryable": error.retryable,
+                },
+            )
+            raise error from exc
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise AIProviderError("ai_embedding_invalid_response") from exc
+        if (
+            len(embeddings) != len(input_texts)
+            or not embeddings
+            or any(not embedding.values for embedding in embeddings)
+            or len({len(embedding.values) for embedding in embeddings}) != 1
+        ):
+            raise AIProviderError("ai_embedding_invalid_response")
+        return _AIEmbeddingResponse(embeddings=embeddings)
 
 
 class _OpenAICompatibleClient:
-    def __init__(self, base_url: str, api_key: str, model: str):
-        self.models = _OpenAICompatibleModels(base_url, api_key, model)
+    def __init__(self, base_url: str, api_key: str, model: str, embedding_model: str | None = None):
+        self.models = _OpenAICompatibleModels(base_url, api_key, model, embedding_model)
+
+
+def validate_generated_image(
+    image_bytes: bytes,
+    *,
+    claimed_format: str | None = None,
+) -> tuple[str, int, int]:
+    if not image_bytes or len(image_bytes) > MAX_GENERATED_IMAGE_BYTES:
+        raise ImageGenerationProviderError(
+            "ai_image_invalid_bytes",
+            retryable=True,
+        )
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image.verify()
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            width, height = image.size
+            detected_format = (image.format or "").lower()
+    except (Image.DecompressionBombError, OSError, UnidentifiedImageError, ValueError) as exc:
+        raise ImageGenerationProviderError(
+            "ai_image_invalid_bytes",
+            retryable=True,
+        ) from exc
+
+    format_aliases = {"jpeg": "jpg", "jpg": "jpg", "png": "png", "webp": "webp"}
+    output_format = format_aliases.get(detected_format)
+    if output_format is None:
+        raise ImageGenerationProviderError(
+            "ai_image_unsupported_format",
+            retryable=False,
+        )
+    if (
+        width < MIN_GENERATED_IMAGE_DIMENSION
+        or height < MIN_GENERATED_IMAGE_DIMENSION
+        or width > MAX_GENERATED_IMAGE_DIMENSION
+        or height > MAX_GENERATED_IMAGE_DIMENSION
+    ):
+        raise ImageGenerationProviderError(
+            "ai_image_dimensions_too_small",
+            retryable=True,
+        )
+
+    normalized_claim = format_aliases.get((claimed_format or "").lower())
+    if normalized_claim and normalized_claim != output_format:
+        logger.warning(
+            "ai.image.format_mismatch",
+            extra={
+                "integration": "ai_image",
+                "operation": "validate_image",
+                "claimed_format": normalized_claim,
+                "detected_format": output_format,
+            },
+        )
+    return output_format, width, height
+
+
+def _download_generated_image(image_url: str) -> bytes:
+    try:
+        validated_ips = resolve_and_validate_url(image_url, allow_http=False)
+        chunks: list[bytes] = []
+        total_bytes = 0
+        with httpx.stream(
+            "GET",
+            image_url,
+            timeout=AI_IMAGE_DOWNLOAD_TIMEOUT,
+            follow_redirects=False,
+        ) as response:
+            response.raise_for_status()
+            assert_connected_peer_allowed(response, validated_ips)
+            content_length = response.headers.get("content-length")
+            if content_length and int(content_length) > MAX_GENERATED_IMAGE_BYTES:
+                raise ImageGenerationProviderError(
+                    "ai_image_too_large",
+                    retryable=False,
+                )
+            for chunk in response.iter_bytes():
+                total_bytes += len(chunk)
+                if total_bytes > MAX_GENERATED_IMAGE_BYTES:
+                    raise ImageGenerationProviderError(
+                        "ai_image_too_large",
+                        retryable=False,
+                    )
+                chunks.append(chunk)
+        return b"".join(chunks)
+    except ImageGenerationProviderError:
+        raise
+    except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.TransportError, SSRFBlockedError, ValueError) as exc:
+        error = _safe_provider_error(exc, operation="image_download")
+        raise ImageGenerationProviderError(
+            error.code,
+            status_code=error.status_code,
+            retryable=error.retryable,
+        ) from exc
 
 
 def get_gemini_client():
@@ -191,14 +515,54 @@ def get_gemini_client():
         base_url = getattr(ai_config, "openai_base_url", None)
         api_key = getattr(ai_config, "openai_api_key", None)
         model = getattr(ai_config, "openai_model", None)
+        embedding_model = getattr(ai_config, "openai_embedding_model", None)
         if not base_url or not api_key or not model:
             raise Exception("OpenAI-compatible AI provider is not fully configured")
-        return _OpenAICompatibleClient(base_url=base_url, api_key=api_key, model=model)
+        return _OpenAICompatibleClient(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            embedding_model=embedding_model,
+        )
 
     api_key = getattr(ai_config, 'gemini_api_key', None)
     if not api_key:
         raise Exception("Gemini API key not configured")
     return genai.Client(api_key=api_key)
+
+
+def embedding_backend_description() -> tuple[str, str | None]:
+    """Describe where embeddings come from: ("dedicated"|"chat_provider", base_url)."""
+    ai_config = get_learnhouse_config().ai_config
+    base_url = getattr(ai_config, "embedding_base_url", None)
+    if base_url:
+        return "dedicated", base_url
+    return "chat_provider", getattr(ai_config, "openai_base_url", None)
+
+
+def get_embedding_client():
+    """Get the client used for embeddings only.
+
+    Embeddings are deliberately decoupled from chat. The configured chat
+    provider here serves /chat/completions fine but answers 404 on
+    /embeddings for every model it advertises, so embeddings are routed to a
+    dedicated service via LEARNHOUSE_EMBEDDING_BASE_URL. When that is unset,
+    fall back to the chat provider so deployments whose provider does serve
+    embeddings keep working unchanged.
+    """
+    ai_config = get_learnhouse_config().ai_config
+    base_url = getattr(ai_config, "embedding_base_url", None)
+    if not base_url:
+        return get_gemini_client()
+
+    return _OpenAICompatibleClient(
+        base_url=base_url,
+        # The self-hosted service runs on the internal network and treats an
+        # empty key as "no auth required"; a shared secret is still supported.
+        api_key=getattr(ai_config, "embedding_api_key", None) or "",
+        model=getattr(ai_config, "openai_model", None) or "",
+        embedding_model=getattr(ai_config, "openai_embedding_model", None),
+    )
 
 
 def generate_openai_compatible_image(
@@ -218,7 +582,11 @@ def generate_openai_compatible_image(
     api_key = getattr(ai_config, "openai_api_key", None)
     image_model = model or getattr(ai_config, "openai_image_model", None) or "gpt-image-2"
     if not base_url or not api_key:
-        raise Exception("OpenAI-compatible image provider is not configured")
+        raise ImageGenerationProviderError(
+            "ai_image_not_configured",
+            retryable=False,
+        )
+    base_url = normalize_openai_base_url(base_url)
 
     payload: dict[str, Any] = {
         "model": image_model,
@@ -231,40 +599,90 @@ def generate_openai_compatible_image(
     if background:
         payload["background"] = background
 
-    response = httpx.post(
-        f"{base_url.rstrip('/')}/images/generations",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
-        timeout=180.0,
-    )
-    response.raise_for_status()
-    data = response.json()
-    image_item = (data.get("data") or [{}])[0]
-    output_format = (data.get("output_format") or "png").lower()
-    revised_prompt = image_item.get("revised_prompt")
+    endpoint = f"{base_url}/images/generations"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    max_attempts = 3
+    last_error: ImageGenerationProviderError | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            response = httpx.post(
+                endpoint,
+                headers=headers,
+                json=payload,
+                timeout=AI_IMAGE_TIMEOUT,
+            )
+            response.raise_for_status()
+            break
+        except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.TransportError) as exc:
+            safe_error = _safe_provider_error(exc, operation="image")
+            last_error = ImageGenerationProviderError(
+                safe_error.code,
+                status_code=safe_error.status_code,
+                retryable=safe_error.retryable,
+            )
+            logger.warning(
+                "ai.provider.request_failed",
+                extra={
+                    "integration": "ai_image",
+                    "operation": "generate_image",
+                    "model": image_model,
+                    "size": size,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "provider_status": last_error.status_code,
+                    "error_code": last_error.code,
+                    "retryable": last_error.retryable,
+                },
+            )
+            if attempt == max_attempts or not last_error.retryable:
+                raise last_error from exc
+            time.sleep(2 if attempt == 1 else 6)
+    else:
+        raise last_error or ImageGenerationProviderError("ai_image_unavailable")
+
+    try:
+        data = response.json()
+        image_items = data.get("data") if isinstance(data, dict) else None
+        image_item = image_items[0] if isinstance(image_items, list) and image_items else None
+        if not isinstance(image_item, dict):
+            raise ValueError("missing image item")
+        output_format = str(data.get("output_format") or "png").lower()
+        revised_prompt_value = image_item.get("revised_prompt")
+        revised_prompt = (
+            revised_prompt_value
+            if isinstance(revised_prompt_value, str)
+            else None
+        )
+    except (AttributeError, IndexError, TypeError, ValueError) as exc:
+        raise ImageGenerationProviderError("ai_image_invalid_response") from exc
 
     b64_json = image_item.get("b64_json")
     if b64_json:
         import base64
-        return base64.b64decode(b64_json), output_format, revised_prompt
+        try:
+            image_bytes = base64.b64decode(b64_json, validate=True)
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise ImageGenerationProviderError("ai_image_invalid_response") from exc
+        output_format, _, _ = validate_generated_image(
+            image_bytes,
+            claimed_format=output_format,
+        )
+        return image_bytes, output_format, revised_prompt
 
     image_url = image_item.get("url")
-    if image_url:
-        image_response = httpx.get(image_url, timeout=180.0)
-        image_response.raise_for_status()
-        content_type = image_response.headers.get("content-type", "")
-        if "jpeg" in content_type or "jpg" in content_type:
-            output_format = "jpg"
-        elif "webp" in content_type:
-            output_format = "webp"
-        elif "png" in content_type:
-            output_format = "png"
-        return image_response.content, output_format, revised_prompt
+    if isinstance(image_url, str) and image_url:
+        image_bytes = _download_generated_image(image_url)
+        output_format, _, _ = validate_generated_image(
+            image_bytes,
+            claimed_format=output_format,
+        )
+        return image_bytes, output_format, revised_prompt
 
-    raise Exception("Image generation response did not include image data")
+    raise ImageGenerationProviderError("ai_image_invalid_response")
 
 
 def ask_ai(

@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { getUriWithOrg } from '@services/config/config'
-import { BookOpenCheck, CheckCircle, ChevronLeft, ChevronRight, MessageSquare, UserRoundPen, Edit2, Maximize2, Minimize2, Trophy, Sparkles, XCircle, Lock, RotateCcw, Infinity as InfinityIcon } from 'lucide-react'
+import { BookOpenCheck, CheckCircle, ChevronLeft, ChevronRight, MessageSquare, UserRoundPen, Edit2, Maximize2, Minimize2, Trophy, Sparkles, XCircle, Lock, RotateCcw, Infinity as InfinityIcon, Loader2 } from 'lucide-react'
 import dynamic from 'next/dynamic'
 import { markActivityAsComplete, unmarkActivityAsComplete } from '@services/courses/activity'
 import { usePathname, useRouter } from 'next/navigation'
@@ -11,12 +11,13 @@ import { useOrg, useOrgMembership } from '@components/Contexts/OrgContext'
 import { CourseProvider } from '@components/Contexts/CourseContext'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
 import React, { useEffect, useRef, useMemo, lazy, Suspense } from 'react'
-import { getAssignmentFromActivityUUID, getFinalGrade, retryAssignmentSubmission, submitAssignmentForGrading } from '@services/courses/assignments'
+import { getAssignmentFromActivityUUID, getAssignmentTasks, getFinalGrade, retryAssignmentSubmission, submitAssignmentForGrading } from '@services/courses/assignments'
 import { AssignmentProvider } from '@components/Contexts/Assignments/AssignmentContext'
 import { AssignmentsTaskProvider } from '@components/Contexts/Assignments/AssignmentsTaskContext'
-import AssignmentSubmissionProvider, { useAssignmentSubmission } from '@components/Contexts/Assignments/AssignmentSubmissionContext'
+import AssignmentSubmissionProvider, { useAssignmentSubmission, useAssignmentTaskSubmissions } from '@components/Contexts/Assignments/AssignmentSubmissionContext'
+import { assignmentTaskDisplayName, isAssignmentTaskAnswerComplete } from '@components/Objects/Activities/Assignment/assignmentCompletion'
 import toast from 'react-hot-toast'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query/keys'
 import { useTrail } from '@/hooks/queries/useTrail'
 import { useCourseMeta } from '@/hooks/queries/useCourses'
@@ -40,6 +41,7 @@ import ActivityIndicators from '@components/Pages/Courses/ActivityIndicators'
 import UserAvatar from '@components/Objects/UserAvatar'
 import { useTranslation } from 'react-i18next'
 import { useAnalytics } from '@/hooks/useAnalytics'
+import { coerceSimplePilotBoolean } from '@lib/simple-pilot-assignments'
 
 const ReactConfetti = dynamic(() => import('react-confetti'), { ssr: false })
 
@@ -65,6 +67,15 @@ const LoadingFallback = () => (
     </div>
   </div>
 );
+
+function responseErrorMessage(response: any, fallback: string) {
+  const detail = response?.data?.detail ?? response?.data?.message ?? response?.detail ?? response?.message
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (detail && typeof detail.message === 'string') return detail.message
+  if (response instanceof Error && response.message) return response.message
+  if (Array.isArray(detail)) return detail.map((item) => item?.msg || String(item)).join('；')
+  return fallback
+}
 
 function ActivityContentSkeleton({ activityType }: { activityType?: string }) {
   const isVideo = activityType === 'TYPE_VIDEO' || activityType === 'TYPE_SCORM'
@@ -1417,56 +1428,130 @@ function AssignmentTools(props: {
 }) {
   const { t } = useTranslation();
   const submission = useAssignmentSubmission() as any
+  const taskSubmissionsMap = useAssignmentTaskSubmissions() as Record<string, any> | null
   const session = useLHSession() as any;
+  const org = useOrg() as any;
   const queryClient = useQueryClient();
   const [gradeData, setGradeData] = React.useState<any>(null);
   const [isGradeModalOpen, setIsGradeModalOpen] = React.useState(false);
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
+  const submitInFlightRef = React.useRef(false);
+  const retryInFlightRef = React.useRef(false);
   const { width: windowWidth, height: windowHeight } = useWindowSize();
+  const assignmentUUID = props.assignment?.assignment_uuid;
+  const accessToken = session.data?.tokens?.access_token;
+  const assignmentTasksQuery = useQuery({
+    queryKey: queryKeys.assignments.tasks(assignmentUUID || ''),
+    queryFn: async () => {
+      if (!assignmentUUID || !accessToken) return [];
+      const res = await getAssignmentTasks(assignmentUUID, accessToken);
+      if (res.success === false) {
+        throw new Error(responseErrorMessage(res, '讀取題目失敗'));
+      }
+      return Array.isArray(res.data) ? res.data : [];
+    },
+    enabled: !!(assignmentUUID && accessToken),
+    staleTime: 60_000,
+  });
   // Ensures the auto-open-on-mount logic only fires once per page view,
   // so the modal doesn't pop back open every time gradeData refreshes.
   const hasAutoOpenedRef = React.useRef(false);
 
   const submitForGradingUI = async () => {
-    if (props.assignment) {
+    if (!assignmentUUID || !accessToken || isSubmitting || submitInFlightRef.current) return false
+    if (assignmentTasksQuery.isPending || (hasAssignmentTasks && taskSubmissionsMap === null)) {
+      toast.error(
+        assignmentTasksQuery.isPending
+          ? t('assignments.loading_tasks', { defaultValue: '正在讀取題目' })
+          : t('assignments.loading_answers', { defaultValue: '正在讀取答案' })
+      )
+      return false
+    }
+    if (assignmentTasksQuery.isError || !hasAssignmentTasks) {
+      toast.error(
+        assignmentTasksQuery.isError
+          ? t('assignments.tasks_load_failed', { defaultValue: '題目讀取失敗' })
+          : t('assignments.teacher_preparing_tasks', { defaultValue: '老師正在準備題目' })
+      )
+      return false
+    }
+    if (hasAssignmentTasks && taskSubmissionsMap !== null && !allTasksComplete) {
+      toast.error(
+        incompleteTaskNames.length > 0
+          ? t('assignments.complete_all_tasks_before_submit_toast', {
+              tasks: incompleteTaskNameList,
+              defaultValue: '請先完成並儲存所有題目：還差 {{tasks}}',
+            })
+          : t('assignments.complete_all_tasks_before_submit_generic', {
+              defaultValue: '請先完成並儲存所有題目，再提交批改。',
+            })
+      )
+      scrollToFirstIncompleteTask()
+      return false
+    }
+    submitInFlightRef.current = true
+    setIsSubmitting(true)
+    try {
       const res = await submitAssignmentForGrading(
-        props.assignment?.assignment_uuid,
-        session.data?.tokens?.access_token
+        assignmentUUID,
+        accessToken
       )
       if (res.success) {
         toast.success(t('assignments.assignment_submitted_success'))
-        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.submission(props.assignment?.assignment_uuid) })
-        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.taskSubmission(props.assignment?.assignment_uuid) })
+        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.submission(assignmentUUID) })
+        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.taskSubmission(assignmentUUID) })
+        if (org?.id) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.assignments.studentQueue(org.id) })
+        }
+        return true
       }
       else {
-        toast.error(t('assignments.failed_submit_assignment'))
+        toast.error(responseErrorMessage(res, t('assignments.failed_submit_assignment')))
+        return false
       }
+    } catch (error) {
+      toast.error(responseErrorMessage(error, t('assignments.failed_submit_assignment')))
+      return false
+    } finally {
+      submitInFlightRef.current = false
+      setIsSubmitting(false)
     }
   }
 
   const [isRetrying, setIsRetrying] = React.useState(false);
   const retrySubmissionUI = async () => {
-    if (!props.assignment || isRetrying) return;
+    if (!assignmentUUID || !accessToken || isRetrying || retryInFlightRef.current) return false;
+    retryInFlightRef.current = true;
     setIsRetrying(true);
     try {
       const res = await retryAssignmentSubmission(
-        props.assignment?.assignment_uuid,
-        session.data?.tokens?.access_token
+        assignmentUUID,
+        accessToken
       );
       if (res.success) {
         toast.success(t('assignments.retry_assignment_success'));
-        // Pull the fresh per-task batch + the user submission so the task
-        // editors snap back to an empty state without a hard reload.
-        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.submission(props.assignment?.assignment_uuid) });
-        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.taskSubmission(props.assignment?.assignment_uuid) });
+        // Pull the fresh per-task batch + the user submission so task editors
+        // keep saved answers but switch back into editable retry state.
+        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.submission(assignmentUUID) });
+        queryClient.invalidateQueries({ queryKey: queryKeys.assignments.taskSubmission(assignmentUUID) });
+        if (org?.id) {
+          queryClient.invalidateQueries({ queryKey: queryKeys.assignments.studentQueue(org.id) });
+        }
         setGradeData(null);
         setIsGradeModalOpen(false);
         // Re-arm the auto-open on this fresh attempt so the next graded
         // result still pops the celebration / detail modal.
         hasAutoOpenedRef.current = false;
+        return true;
       } else {
-        toast.error(t('assignments.retry_assignment_failed'));
+        toast.error(responseErrorMessage(res, t('assignments.retry_assignment_failed')));
+        return false;
       }
+    } catch (error) {
+      toast.error(responseErrorMessage(error, t('assignments.retry_assignment_failed')));
+      return false;
     } finally {
+      retryInFlightRef.current = false;
       setIsRetrying(false);
     }
   };
@@ -1501,14 +1586,14 @@ function AssignmentTools(props: {
     if (!gradeData) return;
     if (!submission || submission.length === 0) return;
     if (submission[0].submission_status !== 'GRADED') return;
-    if (!props.assignment?.auto_grading) return;
+    if (!coerceSimplePilotBoolean(props.assignment?.auto_grading)) return;
     hasAutoOpenedRef.current = true;
     setIsGradeModalOpen(true);
   }, [gradeData, submission, props.assignment]);
 
   // No submission yet, OR the row exists in PENDING / NOT_SUBMITTED because
-  // the student previously hit "Try again" and the retry endpoint reset the
-  // row in place. In both cases the next action is the same: submit for
+  // the student previously hit "Try again" and the retry endpoint reopened
+  // the row for edits. In both cases the next action is the same: submit for
   // grading. The submit endpoint upserts on PENDING so a fresh submission
   // here reuses the existing row and preserves the attempt counter.
   const isAwaitingSubmission =
@@ -1518,25 +1603,171 @@ function AssignmentTools(props: {
     submission[0].submission_status === 'NOT_SUBMITTED';
   const attemptNumber = submission?.[0]?.attempt_number ?? 1;
   const isRetryAttempt = isAwaitingSubmission && submission?.length > 0 && attemptNumber > 1;
+  const scorePolicy = props.assignment?.score_policy || 'highest';
+  const scorePolicyNote = scorePolicy === 'highest'
+    ? t('assignments.score_policy_highest_student_note', {
+        defaultValue: '老師已設定保留最高分：重做後系統會用你最高的一次成績計分。',
+      })
+    : t('assignments.score_policy_latest_student_note', {
+        defaultValue: '老師已設定以最後一次提交計分：重做後會用最新成績計分。',
+      });
+  const assignmentTasks = Array.isArray(assignmentTasksQuery.data) ? assignmentTasksQuery.data : [];
+  const hasAssignmentTasks = assignmentTasks.length > 0;
+  const incompleteTasks = hasAssignmentTasks && taskSubmissionsMap
+    ? assignmentTasks.filter((task: any) => (
+        !isAssignmentTaskAnswerComplete(task, taskSubmissionsMap[task.assignment_task_uuid])
+      ))
+    : [];
+  const completedTaskCount = hasAssignmentTasks
+    ? assignmentTasks.length - incompleteTasks.length
+    : 0;
+  const incompleteTaskNames = incompleteTasks.slice(0, 3).map((task: any, index: number) => {
+    const taskIndex = assignmentTasks.indexOf(task);
+    return assignmentTaskDisplayName(
+      task,
+      taskIndex >= 0 ? taskIndex : index,
+      t('assignments.task', { defaultValue: '題目' }),
+      24
+    );
+  }).filter(Boolean);
+  const incompleteTaskNameList = incompleteTaskNames.join(
+    t('assignments.task_name_separator', { defaultValue: '、' })
+  );
+  const allTasksComplete = hasAssignmentTasks && completedTaskCount === assignmentTasks.length;
+  const firstIncompleteTask = incompleteTasks[0];
+  const allowRetriesForSubmission = coerceSimplePilotBoolean(props.assignment?.allow_retries);
+  const submitConfirmationMessage = (
+    <div className="space-y-2">
+      <p>{t('assignments.submit_assignment_confirm')}</p>
+      <p className="rounded-md bg-amber-50 px-3 py-2 text-sm font-semibold leading-snug text-amber-800">
+        {t('assignments.submit_assignment_answer_reminder', {
+          defaultValue: '提交前請確認每題都有答案，並且已按「儲存答案」。系統會自動批改簡單題。',
+        })}
+      </p>
+      {allowRetriesForSubmission && (
+        <p className="rounded-md bg-cyan-50 px-3 py-2 text-sm font-semibold leading-snug text-cyan-800">
+          {scorePolicyNote}
+        </p>
+      )}
+    </div>
+  );
+
+  function scrollToFirstIncompleteTask() {
+    if (!firstIncompleteTask?.assignment_task_uuid || typeof document === 'undefined') return
+    document
+      .getElementById(`assignment-task-${firstIncompleteTask.assignment_task_uuid}`)
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
 
   if (isAwaitingSubmission) {
+    if (assignmentTasksQuery.isPending) {
+      return (
+        <div id="assignment-submit-tools" className="bg-slate-500 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white transition delay-150 duration-300 ease-in-out">
+          <span className="text-[10px] font-bold mb-1 uppercase">{t('common.status')}</span>
+          <div className="flex items-center space-x-2">
+            <Loader2 size={17} className="animate-spin" />
+            <span className="text-xs font-bold">
+              {t('assignments.loading_tasks', { defaultValue: '正在讀取題目' })}
+            </span>
+          </div>
+        </div>
+      )
+    }
+
+    if (hasAssignmentTasks && taskSubmissionsMap === null) {
+      return (
+        <div id="assignment-submit-tools" className="bg-slate-500 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white transition delay-150 duration-300 ease-in-out">
+          <span className="text-[10px] font-bold mb-1 uppercase">{t('common.status')}</span>
+          <div className="flex items-center space-x-2">
+            <Loader2 size={17} className="animate-spin" />
+            <span className="text-xs font-bold">
+              {t('assignments.loading_answers', { defaultValue: '正在讀取答案' })}
+            </span>
+          </div>
+        </div>
+      )
+    }
+
+    if (assignmentTasksQuery.isError || !hasAssignmentTasks) {
+      return (
+        <div id="assignment-submit-tools" className="bg-slate-500 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white transition delay-150 duration-300 ease-in-out">
+          <span className="text-[10px] font-bold mb-1 uppercase">{t('common.status')}</span>
+          <div className="flex items-center space-x-2">
+            <BookOpenCheck size={17} />
+            <span className="text-xs font-bold">
+              {assignmentTasksQuery.isError
+                ? t('assignments.tasks_load_failed', { defaultValue: '題目讀取失敗' })
+                : t('assignments.teacher_preparing_tasks', { defaultValue: '老師正在準備題目' })}
+            </span>
+          </div>
+        </div>
+      )
+    }
+
+    if (!allTasksComplete) {
+      return (
+        <div id="assignment-submit-tools" className="bg-amber-700 rounded-md px-4 nice-shadow flex flex-col gap-2 p-2.5 text-white transition delay-150 duration-300 ease-in-out">
+          <div>
+            <span className="text-[10px] font-bold mb-1 block uppercase">{t('common.status')}</span>
+            <div className="flex items-center space-x-2">
+              <BookOpenCheck size={17} />
+              <span className="text-xs font-bold">
+                {t('assignments.complete_all_tasks_before_submit', {
+                  defaultValue: '請先完成並儲存所有題目',
+                })}
+                <span className="ml-1 opacity-80">
+                  ({completedTaskCount}/{assignmentTasks.length})
+                </span>
+              </span>
+            </div>
+          </div>
+          {incompleteTaskNames.length > 0 && (
+            <span className="mt-1 max-w-[260px] text-[10px] font-semibold leading-snug text-white/85">
+              {t('assignments.incomplete_tasks_short', { defaultValue: '還差' })}：
+              {incompleteTaskNames.join('、')}
+              {incompleteTasks.length > incompleteTaskNames.length
+                ? ` ${t('assignments.more_tasks_suffix', {
+                    count: incompleteTasks.length - incompleteTaskNames.length,
+                    defaultValue: `等 ${incompleteTasks.length - incompleteTaskNames.length} 題`,
+                  })}`
+                : ''}
+            </span>
+          )}
+          {firstIncompleteTask && (
+            <button
+              type="button"
+              onClick={scrollToFirstIncompleteTask}
+              className="inline-flex h-7 w-fit items-center rounded-md bg-white px-2.5 text-[11px] font-black text-amber-800 hover:bg-amber-50"
+            >
+              {t('assignments.student_progress_jump_next', { defaultValue: '跳到下一題' })}
+            </button>
+          )}
+        </div>
+      )
+    }
+
     return (
       <ConfirmationModal
         confirmationButtonText={t('assignments.submit_assignment')}
-        confirmationMessage={t('assignments.submit_assignment_confirm')}
+        confirmationMessage={submitConfirmationMessage}
         dialogTitle={t('assignments.submit_assignment_title')}
         dialogTrigger={
-          <div className="bg-cyan-800 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white hover:cursor-pointer transition delay-150 duration-300 ease-in-out">
+          <button
+            id="assignment-submit-tools"
+            type="button"
+            disabled={isSubmitting}
+            className="bg-cyan-800 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white text-left hover:cursor-pointer transition delay-150 duration-300 ease-in-out disabled:cursor-not-allowed disabled:opacity-60"
+          >
             <span className="text-[10px] font-bold mb-1 uppercase">
               {isRetryAttempt
                 ? t('assignments.attempt_count', { current: attemptNumber })
                 : t('common.status')}
             </span>
             <div className="flex items-center space-x-2">
-              <BookOpenCheck size={17} />
+              {isSubmitting ? <Loader2 size={17} className="animate-spin" /> : <BookOpenCheck size={17} />}
               <span className="text-xs font-bold">{t('assignments.submit_for_grading')}</span>
             </div>
-          </div>
+          </button>
         }
         functionToExecute={submitForGradingUI}
         status="info"
@@ -1546,7 +1777,7 @@ function AssignmentTools(props: {
 
   if (submission[0].submission_status === 'SUBMITTED') {
     return (
-      <div className="bg-amber-800 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white transition delay-150 duration-300 ease-in-out">
+      <div id="assignment-submit-tools" className="bg-amber-800 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white transition delay-150 duration-300 ease-in-out">
         <span className="text-[10px] font-bold mb-1 uppercase">{t('common.status')}</span>
         <div className="flex items-center space-x-2">
           <UserRoundPen size={17} />
@@ -1573,7 +1804,7 @@ function AssignmentTools(props: {
     // opted in (allow_retries) and attempt counter hasn't reached the cap
     // (max_retries=0 means unlimited). We compute it client-side too so the
     // "Try again" button is only rendered when it would actually succeed.
-    const allowRetries = !!props.assignment?.allow_retries;
+    const allowRetries = coerceSimplePilotBoolean(props.assignment?.allow_retries);
     const maxRetries = Number(props.assignment?.max_retries || 0);
     const currentAttempt = Number(submission?.[0]?.attempt_number || 1);
     const attemptsRemaining = maxRetries
@@ -1698,7 +1929,9 @@ function AssignmentTools(props: {
                     <div className="space-y-1.5">
                       {tasks.map((tb: any) => {
                         const pct = Math.max(0, Math.min(100, tb.percentage || 0));
-                        const passedTask = tb.submitted && pct >= 60;
+                        const passedTask = tb.submitted && (
+                          typeof tb.passed === 'boolean' ? tb.passed : pct >= 60
+                        );
                         return (
                           <div
                             key={tb.assignment_task_uuid}
@@ -1768,6 +2001,9 @@ function AssignmentTools(props: {
                             </p>
                             <p className="text-xs text-gray-600 mt-1 leading-snug">
                               {t('assignments.retry_assignment_confirm')}
+                            </p>
+                            <p className="text-xs text-gray-600 mt-1 leading-snug">
+                              {scorePolicyNote}
                             </p>
                             <p className="text-[11px] text-fuchsia-700 mt-2 font-semibold flex items-center gap-1.5">
                               {maxRetries === 0 ? (

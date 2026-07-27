@@ -3,7 +3,7 @@ import logging
 from datetime import datetime
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlmodel import select
 
@@ -18,8 +18,12 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from src.core.events.database import get_db_session
 from src.db.users import PublicUser, AnonymousUser, APITokenUser
 from src.security.auth import get_current_user, resolve_acting_user_id
-from src.security.org_auth import is_org_member
+from src.security.org_auth import is_org_member, require_org_role_permission
+from src.security.rbac import AccessAction, check_resource_access
+from src.security.superadmin import is_user_superadmin
+from src.services.coding_challenges.challenges import sync_coding_challenges_for_activity
 from src.security.features_utils.usage import (
+    check_limits_with_usage,
     reserve_ai_credit,
 )
 from src.security.features_utils.plan_check import get_org_plan
@@ -35,6 +39,13 @@ from src.services.ai.courseplanning import (
     MAX_ACTIVITY_ITERATIONS,
     ENABLE_ACTIVITY_CONTENT_GENERATION,
 )
+from src.services.ai.pdf_build_jobs import (
+    create_pdf_build_job,
+    get_pdf_build_job,
+    list_pdf_build_jobs,
+    pdf_build_snapshot,
+)
+from src.services.ai.schemas.pdf_build_jobs import PDFBuildJobSnapshot
 from src.services.ai.schemas.courseplanning import (
     StartCoursePlanningSession,
     SendCoursePlanningMessage,
@@ -96,6 +107,32 @@ async def verify_user_org_membership(user_id: int, org_id: int, db_session: Asyn
     return await is_org_member(user_id, org_id, db_session)
 
 
+async def _require_pdf_job_read_access(
+    *,
+    request: Request,
+    job,
+    current_user: PublicUser | AnonymousUser | APITokenUser,
+    db_session: AsyncSession,
+) -> None:
+    acting_user_id = resolve_acting_user_id(current_user)
+    if job.creator_user_id == acting_user_id:
+        return
+    if await is_user_superadmin(acting_user_id, db_session):
+        return
+    if job.course_id is not None:
+        course = await db_session.get(Course, job.course_id)
+        if course is not None:
+            await check_resource_access(
+                request,
+                db_session,
+                current_user,
+                course.course_uuid,
+                AccessAction.UPDATE,
+            )
+            return
+    raise HTTPException(status_code=403, detail="You do not have access to this PDF build")
+
+
 @router.post(
     "/courseplanning/intake",
     response_model=CoursePlanningIntakeResponse,
@@ -135,6 +172,178 @@ async def clarify_course_planning_requirements(
         language=intake_request.language,
         gemini_model_name=ai_model,
         attachments=intake_request.attachments,
+    )
+
+
+@router.post(
+    "/courseplanning/pdf-builds",
+    response_model=PDFBuildJobSnapshot,
+    status_code=202,
+    summary="Queue a durable PDF course build",
+    description="Safely stage teacher PDFs and return a durable background-job status snapshot.",
+    responses={
+        202: {"description": "Build queued or identical idempotent request reused."},
+        400: {"description": "Invalid input or missing Idempotency-Key"},
+        403: {"description": "Insufficient organization permission or AI credits"},
+        409: {"description": "Idempotency-Key was reused with different input"},
+    },
+)
+async def create_pdf_course_build(
+    request: Request,
+    response: Response,
+    org_id: int = Form(...),
+    course_name: str | None = Form(None),
+    instructions: str | None = Form(None),
+    language: str = Form("zh-Hant"),
+    auto_index: bool = Form(True),
+    files: list[UploadFile] = File(...),
+    idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
+    current_user: PublicUser | AnonymousUser | APITokenUser = Depends(get_current_user),
+    db_session: AsyncSession = Depends(get_db_session),
+) -> PDFBuildJobSnapshot:
+    org = await db_session.get(Organization, org_id)
+    if not org or org.id is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    acting_user_id = resolve_acting_user_id(current_user)
+    if not await verify_user_org_membership(acting_user_id, org.id, db_session):
+        raise HTTPException(status_code=403, detail="User is not a member of this organization")
+    await require_org_role_permission(
+        acting_user_id, org.id, db_session, "courses", "action_create"
+    )
+    await check_limits_with_usage("courses", org.id, db_session)
+
+    from src.services.security.rate_limiting import enforce_ai_rate_limit
+
+    enforce_ai_rate_limit(acting_user_id, org.id)
+    ai_model = await get_org_ai_model(org.id, db_session)
+    job, reused = await create_pdf_build_job(
+        org_id=org.id,
+        creator_user_id=acting_user_id,
+        idempotency_key=idempotency_key,
+        course_name=course_name,
+        instructions=instructions,
+        language=language,
+        auto_index=auto_index,
+        ai_model=ai_model,
+        files=files,
+        db_session=db_session,
+    )
+    response.headers["Location"] = f"/api/v1/ai/courseplanning/pdf-builds/{job.job_uuid}?org_id={org.id}"
+    response.headers["Idempotent-Replay"] = "true" if reused else "false"
+    return await pdf_build_snapshot(job, db_session)
+
+
+@router.get(
+    "/courseplanning/pdf-builds/{job_uuid}",
+    response_model=PDFBuildJobSnapshot,
+    summary="Get PDF course build status",
+)
+async def get_pdf_course_build(
+    request: Request,
+    job_uuid: str,
+    org_id: int = Query(...),
+    current_user: PublicUser | AnonymousUser | APITokenUser = Depends(get_current_user),
+    db_session: AsyncSession = Depends(get_db_session),
+) -> PDFBuildJobSnapshot:
+    # Scope in the lookup so a mismatched organization never reveals that a
+    # job UUID exists in another tenant.
+    job = await get_pdf_build_job(job_uuid, org_id, db_session)
+    if job is None:
+        raise HTTPException(status_code=404, detail="PDF build not found")
+    if not await verify_user_org_membership(
+        resolve_acting_user_id(current_user), org_id, db_session
+    ):
+        raise HTTPException(status_code=403, detail="User is not a member of this organization")
+    await _require_pdf_job_read_access(
+        request=request,
+        job=job,
+        current_user=current_user,
+        db_session=db_session,
+    )
+    return await pdf_build_snapshot(job, db_session)
+
+
+@router.get(
+    "/courseplanning/pdf-builds",
+    response_model=list[PDFBuildJobSnapshot],
+    summary="List PDF course builds",
+)
+async def get_pdf_course_builds(
+    request: Request,
+    org_id: int = Query(...),
+    active: bool = Query(False),
+    mine: bool = Query(True),
+    limit: int = Query(20, ge=1, le=50),
+    current_user: PublicUser | AnonymousUser | APITokenUser = Depends(get_current_user),
+    db_session: AsyncSession = Depends(get_db_session),
+) -> list[PDFBuildJobSnapshot]:
+    org = await db_session.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    acting_user_id = resolve_acting_user_id(current_user)
+    if not await verify_user_org_membership(acting_user_id, org_id, db_session):
+        raise HTTPException(status_code=403, detail="User is not a member of this organization")
+
+    jobs = await list_pdf_build_jobs(
+        org_id=org_id,
+        creator_user_id=acting_user_id if mine else None,
+        active=active,
+        # Non-mine results need per-resource filtering before applying the
+        # caller-visible limit.
+        limit=limit if mine else 50,
+        db_session=db_session,
+    )
+    visible = []
+    for job in jobs:
+        try:
+            await _require_pdf_job_read_access(
+                request=request,
+                job=job,
+                current_user=current_user,
+                db_session=db_session,
+            )
+        except HTTPException as exc:
+            if exc.status_code in {401, 403, 404}:
+                continue
+            raise
+        visible.append(await pdf_build_snapshot(job, db_session))
+        if len(visible) >= limit:
+            break
+    return visible
+
+
+@router.post(
+    "/courseplanning/pdf-build",
+    response_model=None,
+    status_code=410,
+    summary="Build a course from uploaded PDFs",
+    description="Extract text from teacher-uploaded PDFs, generate a complete course, create source PDF activities, and optionally index the result for RAG chat.",
+    responses={
+        410: {"description": "Legacy synchronous builder retired; use /pdf-builds."},
+        401: {"description": "Authentication required"},
+    },
+    deprecated=True,
+)
+async def build_pdf_course(
+    request: Request,
+    org_id: int = Form(...),
+    course_name: str | None = Form(None),
+    instructions: str | None = Form(None),
+    language: str = Form("zh-Hant"),
+    auto_index: bool = Form(True),
+    files: list[UploadFile] = File(...),
+    current_user: PublicUser | AnonymousUser | APITokenUser = Depends(get_current_user),
+    db_session: AsyncSession = Depends(get_db_session),
+) -> None:
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "pdf_build_legacy_endpoint_retired",
+            "message": "同步 PDF 建課已停用，請改用新的背景建課功能。",
+            "retryable": False,
+            "replacement": "/api/v1/ai/courseplanning/pdf-builds",
+        },
     )
 
 
@@ -657,7 +866,6 @@ async def save_activity_content(
         logger.info(f"[Save Activity Content] Content keys: {list(content.keys())}")
         content_str = json.dumps(content)
         logger.info(f"[Save Activity Content] Content size: {len(content_str)} bytes")
-        logger.info(f"[Save Activity Content] Content preview: {content_str[:500]}")
 
         # Validate ProseMirror structure
         is_valid, validation_error = validate_prosemirror_content(content)
@@ -683,6 +891,15 @@ async def save_activity_content(
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
 
+    course = (
+        await db_session.execute(select(Course).where(Course.id == activity.course_id))
+    ).scalars().first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    await check_resource_access(
+        request, db_session, current_user, course.course_uuid, AccessAction.UPDATE
+    )
+
     # Verify user is a member of the organization
     if not await verify_user_org_membership(resolve_acting_user_id(current_user), org.id, db_session):
         raise HTTPException(status_code=403, detail="User is not a member of this organization")
@@ -693,7 +910,9 @@ async def save_activity_content(
         logger.info("[Save Activity Content] Updating activity.content...")
 
         # Set content directly on the model
-        activity.content = content
+        activity.content = await sync_coding_challenges_for_activity(
+            activity, course, content, db_session
+        )
         activity.update_date = str(datetime.now())
 
         # Explicitly mark as modified to ensure SQLAlchemy tracks the change
@@ -717,7 +936,6 @@ async def save_activity_content(
             logger.info(f"[Save Activity Content] Verified from DB - content keys: {content_keys}, size: {content_size} bytes")
         else:
             logger.warning("[Save Activity Content] Verification failed - content is empty!")
-            logger.warning(f"[Save Activity Content] Verified activity content: {verified_activity.content if verified_activity else 'None'}")
 
         logger.info("[Save Activity Content] === SUCCESS ===")
         return {"success": True, "activity_uuid": activity_uuid}

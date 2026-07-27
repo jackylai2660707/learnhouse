@@ -81,6 +81,132 @@ export interface CoursePlanningIntakeResponse {
   generation_prompt: string
 }
 
+export type PDFBuildStage = 'extracting' | 'planning' | 'creating' | 'indexing' | 'done' | 'failed'
+
+export interface PDFBuildIssue {
+  code: string
+  message: string
+  retryable: boolean
+}
+
+export interface PDFBuildDraftCourse {
+  course_id: number
+  course_uuid: string
+  public: false
+  published: false
+}
+
+export interface PDFBuildIndexing {
+  status: 'success' | 'skipped' | 'failed' | 'degraded'
+  code?: string | null
+  chunks: number
+}
+
+export interface PDFCourseBuildJob {
+  job_uuid: string
+  org_id: number
+  creator_user_id: number
+  stage: PDFBuildStage
+  progress_current: number
+  progress_total: number
+  draft_course?: PDFBuildDraftCourse | null
+  chapters_created: number
+  activities_created: number
+  source_documents_created: number
+  indexing?: PDFBuildIndexing | null
+  warning?: PDFBuildIssue | null
+  error?: PDFBuildIssue | null
+  attempts: number
+  created_at: string
+  updated_at: string
+  started_at?: string | null
+  finished_at?: string | null
+}
+
+export const PDF_BUILD_STAGE_LABELS: Record<PDFBuildStage, string> = {
+  extracting: '拆解 PDF',
+  planning: '生成課程架構',
+  creating: '建立課堂內容',
+  indexing: '建立 RAG 知識庫',
+  done: '完成',
+  failed: '失敗',
+}
+
+export const PDF_BUILD_MAX_FILES = 8
+export const PDF_BUILD_MAX_FILE_BYTES = 100 * 1024 * 1024
+export const PDF_BUILD_MAX_TOTAL_BYTES = 200 * 1024 * 1024
+
+export interface PDFBuildFileLike {
+  name: string
+  size: number
+}
+
+export function validatePDFBuildFiles(files: PDFBuildFileLike[]): string | null {
+  if (files.length > PDF_BUILD_MAX_FILES) {
+    return `最多只可上傳 ${PDF_BUILD_MAX_FILES} 份 PDF 教材，請先移除部分檔案。`
+  }
+
+  const oversized = files.find((file) => file.size > PDF_BUILD_MAX_FILE_BYTES)
+  if (oversized) {
+    return `「${oversized.name}」超過每份 100 MiB 的上限，請壓縮或分拆 PDF 後再上傳。`
+  }
+
+  const totalSize = files.reduce((total, file) => total + file.size, 0)
+  if (totalSize > PDF_BUILD_MAX_TOTAL_BYTES) {
+    return '所有 PDF 合計超過 200 MiB 上限，請移除、壓縮或分拆教材後再上傳。'
+  }
+  return null
+}
+
+export interface PDFBuildRecoveryController {
+  beginRecovery: () => number
+  beginSubmission: () => number
+  currentGeneration: () => number
+  isCurrent: (generation: number) => boolean
+}
+
+export function createPDFBuildRecoveryController(): PDFBuildRecoveryController {
+  let generation = 0
+  return {
+    beginRecovery: () => ++generation,
+    beginSubmission: () => ++generation,
+    currentGeneration: () => generation,
+    isCurrent: (candidate) => candidate === generation,
+  }
+}
+
+export const isTerminalPDFBuild = (stage: PDFBuildStage) => stage === 'done' || stage === 'failed'
+
+export const hasDegradedPDFBuildIndexing = (job: PDFCourseBuildJob) => (
+  job.indexing?.status === 'failed' || job.indexing?.status === 'degraded'
+)
+
+export const pdfBuildStorageKey = (orgId: number) => `learnhouse:pdf-build:${orgId}:active-job`
+
+export const createPDFBuildIdempotencyKey = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `pdf-build-${Date.now()}-${Math.random().toString(16).slice(2)}`
+}
+
+export function formatPDFBuildError(error: unknown, fallback = 'PDF 建課暫時失敗，請稍後重試。') {
+  if (typeof error === 'string' && error.trim()) return error
+  if (!error || typeof error !== 'object') return fallback
+
+  const record = error as Record<string, unknown>
+  const nested = record.detail && typeof record.detail === 'object'
+    ? record.detail as Record<string, unknown>
+    : null
+  const message = [record.message, record.detail, nested?.message, nested?.detail]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+  const code = [record.code, nested?.code]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0)
+
+  if (message && code) return `${code}：${message}`
+  return message || code || fallback
+}
+
 interface StreamChunk {
   type: 'chunk' | 'done' | 'error'
   content?: string
@@ -177,9 +303,14 @@ export async function clarifyCoursePlanningRequirements(
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}))
+      const detail = errorData.detail
       return {
         success: false,
-        error: errorData.detail || `HTTP error ${response.status}`,
+        error: typeof detail === 'string'
+          ? detail
+          : typeof detail?.message === 'string'
+            ? detail.message
+            : `PDF 建課暫時失敗（HTTP ${response.status}），請稍後重試。`,
       }
     }
 
@@ -187,8 +318,98 @@ export async function clarifyCoursePlanningRequirements(
   } catch (error) {
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Unknown error occurred',
+      error: error instanceof Error ? error.message : 'PDF 建課暫時失敗，請稍後重試。',
     }
+  }
+}
+
+async function readPDFBuildError(response: Response) {
+  const payload: unknown = await response.json().catch(() => null)
+  return formatPDFBuildError(payload, `PDF 建課暫時失敗（HTTP ${response.status}），請稍後重試。`)
+}
+
+export async function startPDFCourseBuild(
+  orgId: number,
+  files: File[],
+  accessToken: string,
+  idempotencyKey: string,
+  options?: {
+    courseName?: string
+    instructions?: string
+    language?: string
+    autoIndex?: boolean
+  }
+): Promise<{ success: boolean; data?: PDFCourseBuildJob; error?: string }> {
+  const formData = new FormData()
+  formData.append('org_id', String(orgId))
+  formData.append('language', options?.language || 'zh-Hant')
+  formData.append('auto_index', String(options?.autoIndex ?? true))
+
+  if (options?.courseName?.trim()) {
+    formData.append('course_name', options.courseName.trim())
+  }
+  if (options?.instructions?.trim()) {
+    formData.append('instructions', options.instructions.trim())
+  }
+
+  files.forEach((file) => formData.append('files', file))
+
+  try {
+    const response = await fetch(`${getAPIUrl()}ai/courseplanning/pdf-builds`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Idempotency-Key': idempotencyKey,
+      },
+      body: formData,
+    })
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: await readPDFBuildError(response),
+      }
+    }
+
+    return { success: true, data: await response.json() }
+  } catch (error) {
+    return {
+      success: false,
+      error: formatPDFBuildError(error),
+    }
+  }
+}
+
+export async function getPDFCourseBuild(
+  orgId: number,
+  jobUuid: string,
+  accessToken: string,
+): Promise<{ success: boolean; data?: PDFCourseBuildJob; error?: string }> {
+  try {
+    const response = await fetch(
+      `${getAPIUrl()}ai/courseplanning/pdf-builds/${encodeURIComponent(jobUuid)}?org_id=${encodeURIComponent(String(orgId))}`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    )
+    if (!response.ok) return { success: false, error: await readPDFBuildError(response) }
+    return { success: true, data: await response.json() }
+  } catch (error) {
+    return { success: false, error: formatPDFBuildError(error) }
+  }
+}
+
+export async function listActiveMyPDFCourseBuilds(
+  orgId: number,
+  accessToken: string,
+): Promise<{ success: boolean; data?: PDFCourseBuildJob[]; error?: string }> {
+  try {
+    const params = new URLSearchParams({ org_id: String(orgId), active: 'true', mine: 'true' })
+    const response = await fetch(`${getAPIUrl()}ai/courseplanning/pdf-builds?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    if (!response.ok) return { success: false, error: await readPDFBuildError(response) }
+    return { success: true, data: await response.json() }
+  } catch (error) {
+    return { success: false, error: formatPDFBuildError(error) }
   }
 }
 

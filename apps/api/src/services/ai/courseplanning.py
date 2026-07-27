@@ -205,6 +205,7 @@ def build_attachment_parts_dict(attachments: List[AttachmentData]) -> list:
 
 def get_language_name(language_code: str) -> str:
     """Convert language code to full language name"""
+    normalized_code = (language_code or "en").strip().lower().replace("_", "-")
     language_names = {
         "en": "English",
         "fr": "French",
@@ -225,8 +226,15 @@ def get_language_name(language_code: str) -> str:
         "id": "Indonesian",
         "th": "Thai",
         "bn": "Bengali",
+        "zh-hant": "Traditional Chinese",
+        "zh-tw": "Traditional Chinese",
+        "zh-hk": "Traditional Chinese",
+        "zh-mo": "Traditional Chinese",
+        "zh-hans": "Simplified Chinese",
+        "zh-cn": "Simplified Chinese",
+        "zh-sg": "Simplified Chinese",
     }
-    return language_names.get(language_code, "English")
+    return language_names.get(normalized_code, "English")
 
 
 def build_course_planning_system_prompt(language: str = "en") -> str:
