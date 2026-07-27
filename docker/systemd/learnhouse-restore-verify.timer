@@ -1,0 +1,11 @@
+[Unit]
+Description=Verify the latest LearnHouse backup every month
+
+[Timer]
+OnCalendar=monthly
+RandomizedDelaySec=2h
+Persistent=true
+Unit=learnhouse-restore-verify.service
+
+[Install]
+WantedBy=timers.target

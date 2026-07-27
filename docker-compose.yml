@@ -1,20 +1,48 @@
 name: learnhouse-df0b43c5
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+    compress: "true"
+
 services:
   learnhouse-app:
-    image: ghcr.io/learnhouse/app:latest
+    image: learnhouse-local:latest
+    # Build the exact image used by this stack when it is not already present.
+    # This makes a fresh-school install runnable with one `docker compose up`.
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        LEARNHOUSE_PUBLIC: "true"
+    # Do not silently reuse a stale local image after source/config updates.
+    # Operators can pin a prebuilt image by using a separate override file.
+    pull_policy: build
     container_name: learnhouse-app-df0b43c5
     restart: unless-stopped
+    init: true
+    logging: *default-logging
     env_file:
       - .env
     environment:
       - HOSTNAME=0.0.0.0
       - LEARNHOUSE_API_URL=http://localhost:9000
+      - LEARNHOUSE_SMTP_PASSWORD_FILE=/run/secrets/learnhouse_smtp_password
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+      executor:
+        condition: service_healthy
+      embeddings:
+        # RAG is optional. Start it with the stack, but never hold the school
+        # login/assignment API behind a multi-GB model's health transition.
+        # /health/ready reports embedding failures as optional degradation.
+        condition: service_started
+        required: false
     networks:
       learnhouse-network-df0b43c5:
       caddy_net:
@@ -22,10 +50,94 @@ services:
           - learnhouse-app
     volumes:
       - learnhouse_content_data_df0b43c5:/app/api/content
+      # The tracked empty placeholder keeps a clean checkout bootable. In
+      # production, set LEARNHOUSE_SMTP_PASSWORD_FILE_HOST to a 0600 host file.
+      - ${LEARNHOUSE_SMTP_PASSWORD_FILE_HOST:-./docker/empty-secret/learnhouse_smtp_password}:/run/secrets/learnhouse_smtp_password:ro
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/api/v1/health"]
+      test: ["CMD", "curl", "-f", "http://localhost/api/v1/health/ready"]
       interval: 30s
       timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  executor:
+    # Self-hosted code sandbox exposing a Judge0-compatible API subset.
+    # Judge0 itself cannot run here: its `isolate` backend needs cgroup v1 and
+    # this host is cgroup v2, which would require a kernel flag and full reboot.
+    build:
+      context: .
+      dockerfile: docker/executor/Dockerfile
+    image: learnhouse-executor:latest
+    container_name: learnhouse-executor-df0b43c5
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    environment:
+      - EXECUTOR_TIMEOUT_SECONDS=${EXECUTOR_TIMEOUT_SECONDS:-10}
+      - EXECUTOR_MEMORY_LIMIT=${EXECUTOR_MEMORY_LIMIT:-256m}
+      - EXECUTOR_CPU_LIMIT=${EXECUTOR_CPU_LIMIT:-1.0}
+      - EXECUTOR_PIDS_LIMIT=${EXECUTOR_PIDS_LIMIT:-64}
+      # Measured ceiling on this 4-core host: 6 works, 8 collapses. See app.py.
+      - EXECUTOR_MAX_CONCURRENCY=${EXECUTOR_MAX_CONCURRENCY:-6}
+      - EXECUTOR_QUEUE_WAIT_SECONDS=${EXECUTOR_QUEUE_WAIT_SECONDS:-15}
+      - EXECUTOR_WORK_ROOT=/executor-work
+      # Sandbox containers are siblings started via the host daemon, so bind
+      # mounts must use the host-side path of the shared work directory.
+      - EXECUTOR_HOST_WORK_ROOT=${EXECUTOR_HOST_WORK_ROOT:-/var/lib/learnhouse-executor-work}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${EXECUTOR_HOST_WORK_ROOT:-/var/lib/learnhouse-executor-work}:/executor-work
+    # Not published to the host: only reachable from the API over the internal
+    # network. Student code runs in separate --network=none containers.
+    networks:
+      - learnhouse-network-df0b43c5
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:2358/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # A clean host builds four sandbox images serially during executor
+      # startup.  This remains one long-running service and avoids parallel
+      # builds competing with the database/API for memory and disk.
+      start_period: 15m
+
+  embeddings:
+    # Self-hosted embedding model exposing an OpenAI-compatible
+    # /v1/embeddings API. The configured chat provider returns 404 for
+    # /v1/embeddings on every model it advertises, so RAG had been falling back
+    # to a lexical hash that only looked like semantic search.
+    build:
+      context: ./docker/embeddings
+      dockerfile: Dockerfile
+    image: learnhouse-embeddings:latest
+    container_name: learnhouse-embeddings-df0b43c5
+    restart: unless-stopped
+    init: true
+    logging: *default-logging
+    environment:
+      # Weights are baked into the image; changing this needs a rebuild.
+      - EMBEDDINGS_MODEL=${EMBEDDINGS_MODEL:-jinaai/jina-embeddings-v2-base-zh}
+      # Must match the model's native width AND CourseEmbedding's Vector(768).
+      - EMBEDDINGS_DIMENSIONS=${EMBEDDINGS_DIMENSIONS:-768}
+      - EMBEDDINGS_MODEL_ALIASES=${EMBEDDINGS_MODEL_ALIASES:-}
+      # ONNX is already multi-threaded; more parallel requests just contend.
+      - EMBEDDINGS_MAX_CONCURRENCY=${EMBEDDINGS_MAX_CONCURRENCY:-2}
+      - EMBEDDINGS_THREADS=${EMBEDDINGS_THREADS:-2}
+      - EMBEDDINGS_QUEUE_WAIT_SECONDS=${EMBEDDINGS_QUEUE_WAIT_SECONDS:-60}
+      - EMBEDDINGS_API_KEY=${LEARNHOUSE_EMBEDDING_API_KEY:-}
+    # The ONNX model settles around 3.6 GiB on this host. Reserve enough for
+    # stable inference but stop a corrupt/oversized model from starving the
+    # database and API.
+    mem_reservation: ${EMBEDDINGS_MEMORY_RESERVATION:-4g}
+    mem_limit: ${EMBEDDINGS_MEMORY_LIMIT:-5g}
+    # Not published to the host: only the API reaches it, over the internal
+    # network at http://embeddings:7997/v1.
+    networks:
+      - learnhouse-network-df0b43c5
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7997/health"]
+      interval: 30s
+      timeout: 5s
       retries: 3
       start_period: 60s
 
@@ -33,9 +145,11 @@ services:
     image: pgvector/pgvector:pg16
     container_name: learnhouse-db-df0b43c5
     restart: unless-stopped
+    logging: *default-logging
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-learnhouse}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-learnhouse}
+      # Never silently fall back to a known password in a real deployment.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
       - POSTGRES_DB=${POSTGRES_DB:-learnhouse}
     volumes:
       - learnhouse_db_data_df0b43c5:/var/lib/postgresql/data
@@ -51,6 +165,7 @@ services:
     image: redis:7.2.3-alpine
     container_name: learnhouse-redis-df0b43c5
     restart: unless-stopped
+    logging: *default-logging
     command: redis-server --appendonly yes
     volumes:
       - learnhouse_redis_data_df0b43c5:/data

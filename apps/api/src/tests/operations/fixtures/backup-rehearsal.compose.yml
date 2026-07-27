@@ -1,0 +1,43 @@
+name: learnhouse-backup-rehearsal
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_USER: learnhouse_rehearsal
+      POSTGRES_DB: learnhouse_rehearsal
+    tmpfs:
+      - /var/lib/postgresql/data:rw,noexec,nosuid,size=512m
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U learnhouse_rehearsal -d learnhouse_rehearsal
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+  learnhouse-app:
+    image: alpine:3.20
+    command:
+      - sh
+      - -eu
+      - -c
+      - mkdir -p /app/api/content/course && printf 'synthetic course content\n' > /app/api/content/course/lesson.txt && sleep 3600
+    tmpfs:
+      - /app/api/content:rw,noexec,nosuid,size=64m
+
+  redis:
+    image: redis:7.2.3-alpine
+    command: redis-server --appendonly yes
+    tmpfs:
+      - /data:rw,noexec,nosuid,size=64m
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+
+networks:
+  default:
+    internal: true

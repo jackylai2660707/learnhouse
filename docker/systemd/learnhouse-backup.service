@@ -1,0 +1,18 @@
+[Unit]
+Description=LearnHouse PostgreSQL/content/Redis backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+Environment="PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+WorkingDirectory=/opt/1panel/docker/compose/learnhouse
+EnvironmentFile=-/etc/learnhouse/backup.env
+ExecStart=/opt/1panel/docker/compose/learnhouse/docker/backup.sh
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+TimeoutStartSec=2h
