@@ -1,0 +1,3 @@
+# Project-scoped Codex defaults.
+# AGENTS.md is the project instruction source of truth.
+project_doc_fallback_filenames = ["AGENTS.md"]
