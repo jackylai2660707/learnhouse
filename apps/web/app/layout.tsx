@@ -1,11 +1,15 @@
 import '../styles/globals.css'
-import { getLEARNHOUSE_TOP_DOMAIN_VAL, getLEARNHOUSE_TELEMETRY_DISABLED_VAL } from '@services/config/config'
 import Script from 'next/script'
 import Providers from '@components/Providers'
 import { Wix_Madefor_Text } from 'next/font/google'
 
-const isDevEnv = getLEARNHOUSE_TOP_DOMAIN_VAL() === 'localhost'
-const isTelemetryDisabled = getLEARNHOUSE_TELEMETRY_DISABLED_VAL() === 'true'
+const topDomain = (
+  process.env.NEXT_PUBLIC_LEARNHOUSE_TOP_DOMAIN
+  || process.env.NEXT_PUBLIC_LEARNHOUSE_DOMAIN
+  || 'localhost'
+).split(':')[0]
+const isDevEnv = topDomain === 'localhost'
+const isTelemetryDisabled = (process.env.NEXT_TELEMETRY_DISABLED || 'true').toLowerCase() === 'true'
 
 const wixMadeforText = Wix_Madefor_Text({
   subsets: ['latin'],

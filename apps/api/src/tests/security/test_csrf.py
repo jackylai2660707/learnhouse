@@ -16,6 +16,7 @@ Tests cover:
 import asyncio
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
+from fastapi import FastAPI
 from starlette.responses import JSONResponse
 
 
@@ -148,6 +149,21 @@ class TestCSRFOriginValidation:
 
             mw = CSRFProtectionMiddleware(MagicMock())
             assert mw.is_allowed_origin(None, None) is True
+
+
+class TestCSRFRegistration:
+    def test_configure_csrf_registers_exactly_once(self):
+        with patch(
+            "src.security.csrf.get_learnhouse_config",
+            return_value=_make_mock_config(allowed_origins=["https://example.com"]),
+        ):
+            from src.security.csrf import CSRFProtectionMiddleware, configure_csrf
+
+            app = FastAPI()
+            configure_csrf(app)
+            configure_csrf(app)
+
+        assert [m.cls for m in app.user_middleware].count(CSRFProtectionMiddleware) == 1
 
 
 class TestCSRFExemptions:

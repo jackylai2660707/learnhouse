@@ -248,6 +248,46 @@ class TestCreateAndUpdateUser:
         assert updated.username == "updateduser"
 
     @pytest.mark.asyncio
+    async def test_oss_signup_succeeds_without_optional_email_provider(
+        self, mock_request, db, admin_user, org
+    ):
+        """An auto-verified school account must not fail after it is committed."""
+        with patch(
+            "src.services.users.users.validate_password_complexity",
+            return_value=Mock(is_valid=True),
+        ), patch(
+            "src.services.users.users.check_limits_with_usage"
+        ), patch(
+            "src.services.users.users.increase_feature_usage"
+        ), patch(
+            "src.services.users.users.track",
+            new_callable=AsyncMock,
+        ), patch(
+            "src.services.users.users.dispatch_webhooks",
+            new_callable=AsyncMock,
+        ), patch(
+            "src.services.users.email_verification.send_verification_email",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("email unavailable"),
+        ) as mock_verification_email, patch(
+            "src.services.users.users.get_deployment_mode",
+            return_value="oss",
+        ), patch(
+            "src.services.users.users.authorization_verify_based_on_roles_and_authorship",
+            new_callable=AsyncMock,
+        ):
+            created = await create_user(
+                mock_request,
+                db,
+                admin_user,
+                _user_create("oss-no-email", "oss-no-email@test.com"),
+                org.id,
+            )
+
+        assert created.email_verified is True
+        mock_verification_email.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_create_user_branch_modes_and_duplicate_guards(
         self, mock_request, db, admin_user, org
     ):

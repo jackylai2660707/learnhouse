@@ -14,8 +14,11 @@ from src.security.features_utils.dependencies import (
     require_courses_feature_by_course_uuid,
     require_courses_feature_by_org_id,
     require_courses_feature_by_org_slug,
+    require_collections_feature,
+    require_communities_feature,
     require_org_admin,
     require_playgrounds_feature,
+    require_podcasts_feature,
 )
 
 
@@ -430,3 +433,112 @@ class TestFeatureDependencies:
 
         assert result is True
         mock_check.assert_called_once_with("playgrounds", 31, db_session)
+
+    # ------------------------------------------------------------------
+    # Feature-flag-only guards (communities / podcasts / collections)
+    #
+    # These modules had a config toggle that nothing read, so disabling them
+    # left the endpoints serving. These tests pin the toggle to the guard.
+    # ------------------------------------------------------------------
+
+    async def test_require_communities_feature_resolves_org_from_uuid(self):
+        db_session = _make_async_session(SimpleNamespace(org_id=12))
+        request = _request({"community_uuid": "community-1"})
+
+        with patch("src.security.features_utils.dependencies._check_feature_enabled", new=AsyncMock(return_value=True)) as mock_check:
+            result = await require_communities_feature(request, db_session)
+
+        assert result is True
+        mock_check.assert_called_once_with("communities", 12, db_session)
+
+    async def test_require_communities_feature_falls_back_to_org_id_path_param(self):
+        db_session = _make_async_session(None)
+        request = _request({"org_id": "8"})
+
+        with patch("src.security.features_utils.dependencies._check_feature_enabled", new=AsyncMock(return_value=True)) as mock_check:
+            result = await require_communities_feature(request, db_session)
+
+        assert result is True
+        mock_check.assert_called_once_with("communities", 8, db_session)
+
+    async def test_require_communities_feature_propagates_disabled_feature(self):
+        db_session = _make_async_session(SimpleNamespace(org_id=12))
+        request = _request({"community_uuid": "community-1"})
+
+        disabled = AsyncMock(side_effect=HTTPException(status_code=403, detail="Communities feature is not enabled for this organization"))
+        with patch("src.security.features_utils.dependencies._check_feature_enabled", new=disabled):
+            with pytest.raises(HTTPException) as exc_info:
+                await require_communities_feature(request, db_session)
+
+        assert exc_info.value.status_code == 403
+
+    async def test_require_communities_feature_skips_check_without_org_identifier(self):
+        db_session = _make_async_session(None)
+        request = _request({})
+
+        with patch("src.security.features_utils.dependencies._check_feature_enabled", new=AsyncMock()) as mock_check:
+            result = await require_communities_feature(request, db_session)
+
+        assert result is True
+        mock_check.assert_not_called()
+
+    async def test_require_communities_feature_rejects_invalid_org_id(self):
+        db_session = _make_async_session(None)
+        request = _request({"org_id": "not-a-number"})
+
+        with pytest.raises(HTTPException) as exc_info:
+            await require_communities_feature(request, db_session)
+
+        assert exc_info.value.status_code == 400
+
+    async def test_require_podcasts_feature_prefers_episode_uuid(self):
+        db_session = _make_async_session(SimpleNamespace(org_id=21))
+        request = _request({"episode_uuid": "ep-1", "podcast_uuid": "pod-1"})
+
+        with patch("src.security.features_utils.dependencies._check_feature_enabled", new=AsyncMock(return_value=True)) as mock_check:
+            result = await require_podcasts_feature(request, db_session)
+
+        assert result is True
+        mock_check.assert_called_once_with("podcasts", 21, db_session)
+
+    async def test_require_podcasts_feature_falls_back_to_podcast_uuid(self):
+        # First lookup (episode) misses, second (podcast) hits.
+        db_session = _make_async_session(None, SimpleNamespace(org_id=22))
+        request = _request({"episode_uuid": "missing", "podcast_uuid": "pod-1"})
+
+        with patch("src.security.features_utils.dependencies._check_feature_enabled", new=AsyncMock(return_value=True)) as mock_check:
+            result = await require_podcasts_feature(request, db_session)
+
+        assert result is True
+        mock_check.assert_called_once_with("podcasts", 22, db_session)
+
+    async def test_require_podcasts_feature_reads_org_id_query_param(self):
+        db_session = _make_async_session(None)
+        request = _request({}, {"org_id": "33"})
+
+        with patch("src.security.features_utils.dependencies._check_feature_enabled", new=AsyncMock(return_value=True)) as mock_check:
+            result = await require_podcasts_feature(request, db_session)
+
+        assert result is True
+        mock_check.assert_called_once_with("podcasts", 33, db_session)
+
+    async def test_require_collections_feature_resolves_org_from_uuid(self):
+        db_session = _make_async_session(SimpleNamespace(org_id=41))
+        request = _request({"collection_uuid": "col-1"})
+
+        with patch("src.security.features_utils.dependencies._check_feature_enabled", new=AsyncMock(return_value=True)) as mock_check:
+            result = await require_collections_feature(request, db_session)
+
+        assert result is True
+        mock_check.assert_called_once_with("collections", 41, db_session)
+
+    async def test_require_collections_feature_propagates_disabled_feature(self):
+        db_session = _make_async_session(None)
+        request = _request({"org_id": "41"})
+
+        disabled = AsyncMock(side_effect=HTTPException(status_code=403, detail="Collections feature is not enabled for this organization"))
+        with patch("src.security.features_utils.dependencies._check_feature_enabled", new=disabled):
+            with pytest.raises(HTTPException) as exc_info:
+                await require_collections_feature(request, db_session)
+
+        assert exc_info.value.status_code == 403

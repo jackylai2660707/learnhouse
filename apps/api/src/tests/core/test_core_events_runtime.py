@@ -12,7 +12,6 @@ import src.core.ee_hooks as ee_hooks
 import src.core.events.autoinstall as autoinstall
 import src.core.events.content as content_events
 import src.core.events.events as core_events
-import src.core.events.logs as logs_events
 
 
 class _FakeResult:
@@ -108,7 +107,7 @@ async def test_auto_install_branches(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_content_and_logs_helpers(monkeypatch, tmp_path):
+async def test_content_helper(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
     created_dirs = []
@@ -125,38 +124,6 @@ async def test_content_and_logs_helpers(monkeypatch, tmp_path):
     await content_events.check_content_directory()
     assert created_dirs == ["content"]
 
-    mkdir_calls = []
-    monkeypatch.setattr(logs_events.os.path, "exists", lambda path: path == "logs")
-    monkeypatch.setattr(logs_events.os, "mkdir", lambda path: mkdir_calls.append(path))
-    await logs_events.create_logs_dir()
-    assert mkdir_calls == []
-
-    monkeypatch.setattr(logs_events.os.path, "exists", lambda path: False)
-    await logs_events.create_logs_dir()
-    assert mkdir_calls == ["logs"]
-
-    basic_config_calls = []
-    info_calls = []
-
-    async def fake_create_logs_dir():
-        return None
-
-    monkeypatch.setattr(logs_events, "create_logs_dir", fake_create_logs_dir)
-    monkeypatch.setattr(logs_events.logging, "FileHandler", lambda path: f"file:{path}")
-    monkeypatch.setattr(logs_events.logging, "StreamHandler", lambda: "stream")
-    monkeypatch.setattr(
-        logs_events.logging,
-        "basicConfig",
-        lambda **kwargs: basic_config_calls.append(kwargs),
-    )
-    monkeypatch.setattr(logs_events.logging, "info", lambda message: info_calls.append(message))
-
-    await logs_events.init_logging()
-
-    assert basic_config_calls and basic_config_calls[0]["handlers"] == ["file:logs/learnhouse.log", "stream"]
-    assert info_calls == ["Logging initiated"]
-
-
 @pytest.mark.asyncio
 async def test_events_startup_shutdown_and_reconcile(monkeypatch):
     app = SimpleNamespace()
@@ -165,7 +132,6 @@ async def test_events_startup_shutdown_and_reconcile(monkeypatch):
     )
 
     connect_to_db = AsyncMock()
-    create_logs_dir = AsyncMock()
     check_content_directory = AsyncMock()
     run_ee_startup = Mock()
     auto_install = AsyncMock()
@@ -188,7 +154,6 @@ async def test_events_startup_shutdown_and_reconcile(monkeypatch):
 
     monkeypatch.setattr(core_events, "get_learnhouse_config", lambda: fake_config)
     monkeypatch.setattr(core_events, "connect_to_db", connect_to_db)
-    monkeypatch.setattr(core_events, "create_logs_dir", create_logs_dir)
     monkeypatch.setattr(core_events, "check_content_directory", check_content_directory)
     monkeypatch.setattr(core_events, "auto_install", auto_install)
     monkeypatch.setattr(core_events, "_reconcile_packs", reconcile_packs)
@@ -204,7 +169,6 @@ async def test_events_startup_shutdown_and_reconcile(monkeypatch):
 
     assert app.learnhouse_config is fake_config
     connect_to_db.assert_awaited_once_with(app)
-    create_logs_dir.assert_awaited_once()
     check_content_directory.assert_awaited_once()
     auto_install.assert_called_once()
     reconcile_packs.assert_called_once()

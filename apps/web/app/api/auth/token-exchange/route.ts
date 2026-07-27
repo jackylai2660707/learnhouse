@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getConfig } from '@services/config/config'
+import { safeErrorType } from '@/lib/server-safe-logging'
 import {
   ACCESS_TOKEN_COOKIE,
   REFRESH_TOKEN_COOKIE,
@@ -8,8 +8,16 @@ import {
   getCookieOptions,
 } from '@services/auth/cookies'
 
-const BACKEND_URL = (getConfig('NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL') || 'http://localhost:1338').replace(/\/+$/, '')
-const PLATFORM_URL = (getConfig('NEXT_PUBLIC_LEARNHOUSE_PLATFORM_URL') || getConfig('LEARNHOUSE_PLATFORM_URL') || 'https://learnhouse.app').replace(/\/+$/, '')
+const BACKEND_URL = (
+  process.env.NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL
+  || process.env.LEARNHOUSE_BACKEND_URL
+  || 'http://localhost:1338'
+).replace(/\/+$/, '')
+const PLATFORM_URL = (
+  process.env.NEXT_PUBLIC_LEARNHOUSE_PLATFORM_URL
+  || process.env.LEARNHOUSE_PLATFORM_URL
+  || 'https://learnhouse.app'
+).replace(/\/+$/, '')
 
 const MAX_CODE_LENGTH = 4096
 const PLATFORM_TIMEOUT_MS = 10_000
@@ -132,7 +140,10 @@ export async function POST(request: NextRequest) {
         PLATFORM_TIMEOUT_MS,
       )
     } catch (err) {
-      console.error(`[token-exchange] step=decrypt platform=${PLATFORM_URL} unreachable:`, err)
+      console.error('[token-exchange] request failed', {
+        error_type: safeErrorType(err),
+        step: 'decrypt',
+      })
       return NextResponse.json(
         { error: 'Could not reach the platform', code: 'platform_unreachable' },
         { status: 502 }
@@ -140,8 +151,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (!codeRes.ok) {
-      const detail = await codeRes.text().catch(() => '')
-      console.error(`[token-exchange] step=decrypt failed: ${codeRes.status} ${detail}`)
+      console.error('[token-exchange] request failed', {
+        status: codeRes.status,
+        step: 'decrypt',
+      })
       return NextResponse.json(
         { error: 'This sign-in link has expired or already been used', code: 'code_expired' },
         { status: 401 }
@@ -190,13 +203,18 @@ export async function POST(request: NextRequest) {
             console.error('[token-exchange] step=refresh response missing access_token')
           }
         } else {
-          const detail = await refreshRes.text().catch(() => '')
-          console.error(`[token-exchange] step=refresh failed: ${refreshRes.status} ${detail}`)
+          console.error('[token-exchange] request failed', {
+            status: refreshRes.status,
+            step: 'refresh',
+          })
           // Non-fatal: we'll fall through to /session validation with the
           // original access_token. If that's also invalid we bail there.
         }
       } catch (err) {
-        console.error('[token-exchange] step=refresh errored:', err)
+        console.error('[token-exchange] request failed', {
+          error_type: safeErrorType(err),
+          step: 'refresh',
+        })
       }
     }
 
@@ -222,7 +240,10 @@ export async function POST(request: NextRequest) {
         BACKEND_TIMEOUT_MS,
       )
     } catch (err) {
-      console.error('[token-exchange] step=session errored:', err)
+      console.error('[token-exchange] request failed', {
+        error_type: safeErrorType(err),
+        step: 'session',
+      })
       return NextResponse.json(
         { error: 'Could not reach backend', code: 'backend_unreachable' },
         { status: 502 }
@@ -230,8 +251,10 @@ export async function POST(request: NextRequest) {
     }
 
     if (!sessionRes.ok) {
-      const detail = await sessionRes.text().catch(() => '')
-      console.error(`[token-exchange] step=session failed: ${sessionRes.status} ${detail}`)
+      console.error('[token-exchange] request failed', {
+        status: sessionRes.status,
+        step: 'session',
+      })
       // Backend semantics (see src/security/auth.py + services/users/users.py):
       //   401 → get_current_user rejected the token. Happens when the JWT is
       //         valid but the user row is missing on this tenant, or when the
@@ -281,7 +304,9 @@ export async function POST(request: NextRequest) {
 
     return response
   } catch (err) {
-    console.error('[token-exchange] unexpected error:', err)
+    console.error('[token-exchange] unexpected failure', {
+      error_type: safeErrorType(err),
+    })
     return NextResponse.json(
       { error: 'Token exchange failed', code: 'unexpected' },
       { status: 500 }

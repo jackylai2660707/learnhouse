@@ -15,7 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 from fastapi import Request
-from sqlmodel import Session
+from sqlmodel.ext.asyncio.session import AsyncSession
 
 from src.db.courses.courses import Course
 from src.db.roles import Role, RoleTypeEnum
@@ -26,7 +26,7 @@ from src.security.rbac.rbac import authorization_verify_based_on_roles
 from src.tests.conftest import ADMIN_RIGHTS
 
 
-def _mk_user(db: Session, *, uid: int, username: str, email: str) -> User:
+async def _mk_user(db: AsyncSession, *, uid: int, username: str, email: str) -> User:
     u = User(
         id=uid,
         username=username,
@@ -39,12 +39,12 @@ def _mk_user(db: Session, *, uid: int, username: str, email: str) -> User:
         update_date=str(datetime.now()),
     )
     db.add(u)
-    db.commit()
-    db.refresh(u)
+    await db.commit()
+    await db.refresh(u)
     return u
 
 
-def _mk_course(db: Session, *, cid: int, org_id: int, uuid: str, public: bool = False) -> Course:
+async def _mk_course(db: AsyncSession, *, cid: int, org_id: int, uuid: str, public: bool = False) -> Course:
     c = Course(
         id=cid,
         name=f"Course {cid}",
@@ -58,12 +58,12 @@ def _mk_course(db: Session, *, cid: int, org_id: int, uuid: str, public: bool = 
         update_date=str(datetime.now()),
     )
     db.add(c)
-    db.commit()
-    db.refresh(c)
+    await db.commit()
+    await db.refresh(c)
     return c
 
 
-def _attach_role(db: Session, *, user_id: int, org_id: int, role_id: int) -> None:
+async def _attach_role(db: AsyncSession, *, user_id: int, org_id: int, role_id: int) -> None:
     db.add(
         UserOrganization(
             user_id=user_id,
@@ -73,7 +73,7 @@ def _attach_role(db: Session, *, user_id: int, org_id: int, role_id: int) -> Non
             update_date=str(datetime.now()),
         )
     )
-    db.commit()
+    await db.commit()
 
 
 @pytest.fixture
@@ -89,10 +89,10 @@ class TestCrossOrgRoleFallback:
         self, db, org, other_org, admin_role, mock_request
     ):
         """Alice is admin in org-A. A course in org-B must not be writable by her."""
-        alice = _mk_user(db, uid=42, username="alice", email="alice@test.com")
-        _attach_role(db, user_id=alice.id, org_id=org.id, role_id=admin_role.id)
+        alice = await _mk_user(db, uid=42, username="alice", email="alice@test.com")
+        await _attach_role(db, user_id=alice.id, org_id=org.id, role_id=admin_role.id)
 
-        org_b_course = _mk_course(
+        org_b_course = await _mk_course(
             db, cid=100, org_id=other_org.id, uuid="course_org_b", public=False
         )
 
@@ -108,10 +108,10 @@ class TestCrossOrgRoleFallback:
         self, db, org, admin_role, mock_request
     ):
         """The same admin retains her legitimate permissions inside her own org."""
-        alice = _mk_user(db, uid=43, username="alice_own", email="alice2@test.com")
-        _attach_role(db, user_id=alice.id, org_id=org.id, role_id=admin_role.id)
+        alice = await _mk_user(db, uid=43, username="alice_own", email="alice2@test.com")
+        await _attach_role(db, user_id=alice.id, org_id=org.id, role_id=admin_role.id)
 
-        own_course = _mk_course(
+        own_course = await _mk_course(
             db, cid=101, org_id=org.id, uuid="course_own", public=False
         )
 
@@ -125,10 +125,10 @@ class TestCrossOrgRoleFallback:
         self, db, org, other_org, admin_role, mock_request
     ):
         """A user with an admin role on org-A but no membership link to org-B."""
-        bob = _mk_user(db, uid=44, username="bob", email="bob@test.com")
-        _attach_role(db, user_id=bob.id, org_id=org.id, role_id=admin_role.id)
+        bob = await _mk_user(db, uid=44, username="bob", email="bob@test.com")
+        await _attach_role(db, user_id=bob.id, org_id=org.id, role_id=admin_role.id)
 
-        victim_course = _mk_course(
+        victim_course = await _mk_course(
             db, cid=102, org_id=other_org.id, uuid="course_victim", public=False
         )
 
@@ -160,13 +160,13 @@ class TestCrossOrgRoleFallback:
             update_date=str(datetime.now()),
         )
         db.add(global_role)
-        db.commit()
+        await db.commit()
 
         # Carol holds the global role via membership in org-A only.
-        carol = _mk_user(db, uid=45, username="carol", email="carol@test.com")
-        _attach_role(db, user_id=carol.id, org_id=org.id, role_id=global_role.id)
+        carol = await _mk_user(db, uid=45, username="carol", email="carol@test.com")
+        await _attach_role(db, user_id=carol.id, org_id=org.id, role_id=global_role.id)
 
-        org_b_course = _mk_course(
+        org_b_course = await _mk_course(
             db, cid=103, org_id=other_org.id, uuid="course_global_victim", public=False
         )
 
@@ -184,8 +184,8 @@ class TestCrossOrgRoleFallback:
         ``None``; role-based checks must still work so create flows are
         unaffected by the cross-org fix.
         """
-        alice = _mk_user(db, uid=46, username="alice_create", email="alice3@test.com")
-        _attach_role(db, user_id=alice.id, org_id=org.id, role_id=admin_role.id)
+        alice = await _mk_user(db, uid=46, username="alice_create", email="alice3@test.com")
+        await _attach_role(db, user_id=alice.id, org_id=org.id, role_id=admin_role.id)
 
         allowed = await authorization_verify_based_on_roles(
             mock_request, alice.id, "create", "course_x", db

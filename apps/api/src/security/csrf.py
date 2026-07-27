@@ -8,7 +8,7 @@ to protect against Cross-Site Request Forgery attacks.
 import logging
 import re
 from typing import Callable
-from fastapi import Request, Response
+from fastapi import FastAPI, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from config.config import get_learnhouse_config
@@ -18,6 +18,13 @@ logger = logging.getLogger(__name__)
 
 # Methods that require CSRF protection
 STATE_CHANGING_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+
+
+def configure_csrf(app: FastAPI) -> None:
+    """Register CSRF protection once, including when EE hooks already added it."""
+    if any(middleware.cls is CSRFProtectionMiddleware for middleware in app.user_middleware):
+        return
+    app.add_middleware(CSRFProtectionMiddleware)
 
 
 class CSRFProtectionMiddleware(BaseHTTPMiddleware):

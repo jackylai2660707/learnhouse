@@ -5,8 +5,18 @@ import NextTopLoader from 'nextjs-toploader'
 import Toast from '@components/Objects/StyledElements/Toast/Toast'
 import '@styles/globals.css'
 import Footer from '@components/Footer/Footer'
-import { getOrganizationContextInfo } from '@services/organizations/orgs'
-import { getOrgFaviconMediaDirectory } from '@services/media/media'
+
+const API_URL = `${(
+  process.env.NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL
+  || process.env.LEARNHOUSE_BACKEND_URL
+  || 'http://localhost:1338'
+).replace(/\/+$/, '')}/api/v1/`
+const MEDIA_URL = (
+  process.env.NEXT_PUBLIC_LEARNHOUSE_MEDIA_URL
+  || process.env.NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL
+  || process.env.LEARNHOUSE_BACKEND_URL
+  || 'http://localhost:1338'
+).replace(/\/+$/, '')
 
 export async function generateMetadata({
   params,
@@ -15,18 +25,30 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { orgslug } = await params
   try {
-    const org = await getOrganizationContextInfo(orgslug, {
+    const org = await fetchOrgContext(orgslug, {
       revalidate: 86400,
       tags: ['organizations'],
     })
     const faviconImage = org?.config?.config?.customization?.general?.favicon_image || org?.config?.config?.general?.favicon_image
     if (faviconImage) {
       return {
-        icons: { icon: getOrgFaviconMediaDirectory(org.org_uuid, faviconImage) },
+        icons: { icon: `${MEDIA_URL}/content/orgs/${org.org_uuid}/favicons/${faviconImage}` },
       }
     }
   } catch {}
   return {}
+}
+
+async function fetchOrgContext(orgslug: string, next: NextFetchRequestConfig) {
+  const response = await fetch(`${API_URL}orgs/slug/${encodeURIComponent(orgslug)}`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    next,
+  })
+  if (!response.ok) {
+    throw new Error(`Organization metadata request failed: ${response.status}`)
+  }
+  return response.json()
 }
 
 export default async function RootLayout(props: {

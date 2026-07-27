@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { safeErrorType } from '@/lib/server-safe-logging'
 
 export async function POST(request: NextRequest) {
   try {
@@ -30,10 +31,12 @@ export async function POST(request: NextRequest) {
     googleAuthUrl.searchParams.set('prompt', 'consent')
 
     return NextResponse.json({ url: googleAuthUrl.toString() })
-  } catch (error: any) {
-    console.error('Google authorize error:', error)
+  } catch (error: unknown) {
+    console.error('[google-authorize] request failed', {
+      error_type: safeErrorType(error),
+    })
     return NextResponse.json(
-      { error: error.message || 'Internal server error' },
+      { error: 'Internal server error' },
       { status: 500 }
     )
   }

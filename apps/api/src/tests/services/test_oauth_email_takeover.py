@@ -97,7 +97,10 @@ async def test_body_email_is_ignored_when_google_returns_different_email(
     with patch(
         "src.services.auth.utils.get_google_user_info",
         new=AsyncMock(return_value=google_payload),
-    ), patch("src.services.auth.utils.update_login_info", return_value=None):
+    ), patch(
+        "src.services.auth.utils.update_login_info",
+        new_callable=AsyncMock,
+    ):
         result = await signWithGoogle(
             mock_request,
             access_token="legit_google_token",
@@ -123,7 +126,10 @@ async def test_happy_path_matching_email(db, mock_request, admin_user):
     with patch(
         "src.services.auth.utils.get_google_user_info",
         new=AsyncMock(return_value=google_payload),
-    ), patch("src.services.auth.utils.update_login_info", return_value=None):
+    ), patch(
+        "src.services.auth.utils.update_login_info",
+        new_callable=AsyncMock,
+    ):
         result = await signWithGoogle(
             mock_request,
             access_token="legit_google_token",

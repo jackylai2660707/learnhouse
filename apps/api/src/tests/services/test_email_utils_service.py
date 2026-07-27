@@ -10,6 +10,7 @@ from starlette.requests import Request
 
 from src.services.email.utils import (
     _is_allowed_base_url,
+    email_configuration_status,
     get_base_url_from_request,
     get_org_signup_base_url,
     send_email,
@@ -62,6 +63,35 @@ def _request(headers=None, scheme="https", server=("api.test", 443)):
 
 
 class TestEmailUtilsService:
+    @pytest.mark.parametrize(
+        ("mailing_overrides", "code"),
+        [
+            ({"system_email_address": ""}, "email_sender_invalid"),
+            ({"email_provider": "resend", "resend_api_key": ""}, "email_resend_key_missing"),
+            ({"email_provider": "smtp", "smtp_host": ""}, "email_smtp_host_missing"),
+            ({"email_provider": "smtp", "smtp_port": 70000}, "email_smtp_port_invalid"),
+            (
+                {
+                    "email_provider": "smtp",
+                    "smtp_username": "smtp-user",
+                    "smtp_password": "",
+                },
+                "email_smtp_credentials_incomplete",
+            ),
+        ],
+    )
+    def test_email_configuration_status_returns_stable_sanitized_codes(
+        self,
+        mailing_overrides,
+        code,
+    ):
+        status = email_configuration_status(
+            _config(**mailing_overrides).mailing_config
+        )
+
+        assert status.configured is False
+        assert status.code == code
+
     def test_is_allowed_base_url_matches_all_supported_sources(self):
         with patch(
             "src.services.email.utils.get_learnhouse_config",
@@ -313,17 +343,23 @@ class TestEmailUtilsService:
         smtp_client.sendmail.assert_called_once()
         smtp_client.quit.assert_called_once()
 
-    def test_send_email_resend_failure_raises_503(self):
+    def test_send_email_resend_failure_raises_503_without_logging_recipient_or_error(
+        self,
+        caplog,
+    ):
         with patch(
             "src.services.email.utils.get_learnhouse_config",
             return_value=_config(email_provider="resend", resend_api_key="key"),
         ), patch(
             "src.services.email.utils.resend.Emails.send",
-            side_effect=Exception("API error"),
+            side_effect=Exception("provider-internal-secret"),
         ):
             with pytest.raises(HTTPException) as exc_info:
                 send_email("to@test.com", "Subject", "<p>Body</p>")
         assert exc_info.value.status_code == 503
+        assert exc_info.value.detail["code"] == "email_provider_unavailable"
+        assert "to@test.com" not in caplog.text
+        assert "provider-internal-secret" not in caplog.text
 
     def test_send_email_smtp_exception_raises_503(self):
         smtp_client = Mock()
@@ -361,6 +397,18 @@ class TestEmailUtilsService:
             with pytest.raises(HTTPException) as exc_info:
                 send_email("to@test.com", "Subject", "<p>Body</p>")
         assert exc_info.value.status_code == 503
+
+    def test_send_email_rejects_incomplete_configuration_before_provider_call(self):
+        with patch(
+            "src.services.email.utils.get_learnhouse_config",
+            return_value=_config(email_provider="resend", resend_api_key=""),
+        ), patch("src.services.email.utils.resend.Emails.send") as resend_send:
+            with pytest.raises(HTTPException) as exc_info:
+                send_email("to@test.com", "Subject", "<p>Body</p>")
+
+        assert exc_info.value.status_code == 503
+        assert exc_info.value.detail["code"] == "email_resend_key_missing"
+        resend_send.assert_not_called()
 
 
 class TestGetPrimaryVerifiedCustomDomain:

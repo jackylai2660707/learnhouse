@@ -1,10 +1,10 @@
 """Add show_correct_answers flag to assignment
 
-Adds a nullable boolean ``show_correct_answers`` column to ``assignment``
-that defaults to false. When true, the student's graded task view reveals
-the correct answers (quiz right options, expected short / number answer,
-form blanks). Default false keeps existing assignments opaque — teachers
-must explicitly opt in.
+Adds a nullable boolean ``show_correct_answers`` column to ``assignment``.
+When true, the student's graded task view reveals the correct answers (quiz
+right options, expected short / number answer, form blanks). The school pilot
+defaults new assignments to true so learners can review, correct mistakes, and
+retry without waiting for manual teacher feedback.
 
 Revision ID: z5a6b7c8d9e0
 Revises: l3m4n5o6p7q8
@@ -42,7 +42,7 @@ def upgrade() -> None:
             'show_correct_answers',
             sa.Boolean(),
             nullable=True,
-            server_default=sa.false(),
+            server_default=sa.true(),
         ),
     )
 

@@ -392,3 +392,109 @@ async def require_playgrounds_feature(
         )
 
     return True
+
+
+# ============================================================================
+# Feature-flag-only dependencies (no plan gating)
+#
+# These modules previously had a config toggle that nothing ever read, so
+# disabling them in the org config changed nothing and the endpoints kept
+# serving. The guards below make those toggles actually enforce.
+# ============================================================================
+
+
+async def _org_id_from_request(
+    request: Request,
+    db_session: AsyncSession,
+    uuid_lookups: list[tuple[str, type, str]],
+) -> int | None:
+    """Resolve the owning org_id from whichever identifier a route exposes.
+
+    ``uuid_lookups`` is an ordered list of ``(path_param, model, column)``
+    triples tried before falling back to an explicit ``org_id`` path or query
+    parameter. Returns None when the request carries no org identifier at all,
+    which callers treat as "nothing to enforce here".
+    """
+    path_params = request.path_params
+
+    for param_name, model, column_name in uuid_lookups:
+        value = path_params.get(param_name)
+        if not value:
+            continue
+        statement = select(model).where(getattr(model, column_name) == value)
+        row = (await db_session.execute(statement)).scalars().first()
+        if row is not None:
+            return row.org_id
+
+    if "org_id" in path_params:
+        try:
+            return int(path_params["org_id"])
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid org_id format")
+
+    org_id_query = request.query_params.get("org_id")
+    if org_id_query is not None:
+        try:
+            return int(org_id_query)
+        except (ValueError, TypeError):
+            return None
+
+    return None
+
+
+async def require_communities_feature(
+    request: Request,
+    db_session: AsyncSession = Depends(get_db_session),
+) -> bool:
+    """Enforce the communities toggle. Resolves org via community_uuid or org_id."""
+    from src.db.communities.communities import Community
+
+    org_id = await _org_id_from_request(
+        request,
+        db_session,
+        [("community_uuid", Community, "community_uuid")],
+    )
+    if org_id is None:
+        return True
+
+    return await _check_feature_enabled("communities", org_id, db_session)
+
+
+async def require_podcasts_feature(
+    request: Request,
+    db_session: AsyncSession = Depends(get_db_session),
+) -> bool:
+    """Enforce the podcasts toggle. Resolves org via episode/podcast uuid or org_id."""
+    from src.db.podcasts.episodes import PodcastEpisode
+    from src.db.podcasts.podcasts import Podcast
+
+    org_id = await _org_id_from_request(
+        request,
+        db_session,
+        [
+            ("episode_uuid", PodcastEpisode, "episode_uuid"),
+            ("podcast_uuid", Podcast, "podcast_uuid"),
+        ],
+    )
+    if org_id is None:
+        return True
+
+    return await _check_feature_enabled("podcasts", org_id, db_session)
+
+
+async def require_collections_feature(
+    request: Request,
+    db_session: AsyncSession = Depends(get_db_session),
+) -> bool:
+    """Enforce the collections toggle. Resolves org via collection_uuid or org_id."""
+    from src.db.collections import Collection
+
+    org_id = await _org_id_from_request(
+        request,
+        db_session,
+        [("collection_uuid", Collection, "collection_uuid")],
+    )
+    if org_id is None:
+        return True
+
+    return await _check_feature_enabled("collections", org_id, db_session)

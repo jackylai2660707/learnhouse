@@ -34,7 +34,7 @@ def _bypass_ai_rate_limit():
         yield
 
 
-def _mk_board(db, *, org_id: int, uid: int, uuid: str) -> Board:
+async def _mk_board(db, *, org_id: int, uid: int, uuid: str) -> Board:
     b = Board(
         id=uid,
         org_id=org_id,
@@ -46,8 +46,8 @@ def _mk_board(db, *, org_id: int, uid: int, uuid: str) -> Board:
         update_date=str(datetime.now()),
     )
     db.add(b)
-    db.commit()
-    db.refresh(b)
+    await db.commit()
+    await db.refresh(b)
     return b
 
 
@@ -63,7 +63,7 @@ async def test_rag_chat_rejects_cross_org_slug(db, org, other_org, regular_user,
     )
 
     reserve_spy = Mock()
-    with patch("src.routers.ai.rag.reserve_ai_credit", reserve_spy):
+    with patch("src.routers.ai.rag.reserve_ai_credit_once", reserve_spy):
         with pytest.raises(HTTPException) as exc_info:
             await api_rag_chat(
                 request=mock_request,
@@ -94,8 +94,8 @@ async def test_rag_chat_rejects_cross_org_course_uuid(db, org, other_org, regula
         update_date=str(datetime.now()),
     )
     db.add(other_course)
-    db.commit()
-    db.refresh(other_course)
+    await db.commit()
+    await db.refresh(other_course)
 
     chat_request = RAGChatRequest(
         message="hi",
@@ -104,7 +104,7 @@ async def test_rag_chat_rejects_cross_org_course_uuid(db, org, other_org, regula
     )
 
     reserve_spy = Mock()
-    with patch("src.routers.ai.rag.reserve_ai_credit", reserve_spy):
+    with patch("src.routers.ai.rag.reserve_ai_credit_once", reserve_spy):
         with pytest.raises(HTTPException) as exc_info:
             await api_rag_chat(
                 request=mock_request,
@@ -128,17 +128,18 @@ async def test_rag_chat_same_org_passes_membership_gate(db, org, regular_user, m
     )
 
     # Mock the downstream side-effects so we only validate the membership gate.
-    with patch("src.routers.ai.rag.reserve_ai_credit"):
-        with patch("src.routers.ai.rag.query_course_rag_stream", new=AsyncMock(return_value=(iter([]), []))):
-            with patch("src.routers.ai.rag.get_chat_session_history", return_value={"message_history": [], "aichat_uuid": "aichat_x"}):
-                # Should not raise at the membership gate.
-                response = await api_rag_chat(
-                    request=mock_request,
-                    chat_request=chat_request,
-                    current_user=regular_user,
-                    db_session=db,
-                )
-                assert response is not None
+    with patch("src.routers.ai.rag.get_ai_credit_period_token", return_value="period-0"):
+        with patch("src.routers.ai.rag.reserve_ai_credit_once"):
+            with patch("src.routers.ai.rag.query_course_rag_stream", new=AsyncMock(return_value=(iter([]), []))):
+                with patch("src.routers.ai.rag.get_chat_session_history", return_value={"message_history": [], "aichat_uuid": "aichat_x"}):
+                    # Should not raise at the membership gate.
+                    response = await api_rag_chat(
+                        request=mock_request,
+                        chat_request=chat_request,
+                        current_user=regular_user,
+                        db_session=db,
+                    )
+                    assert response is not None
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +153,7 @@ async def test_boards_playground_start_rejects_cross_org(db, org, other_org, reg
     from src.routers.boards.boards_playground import start_boards_playground_session
     from src.services.boards.schemas.boards_playground import StartBoardsPlaygroundSession
 
-    other_board = _mk_board(db, org_id=other_org.id, uid=501, uuid="board_other_1")
+    other_board = await _mk_board(db, org_id=other_org.id, uid=501, uuid="board_other_1")
 
     from src.services.boards.schemas.boards_playground import BoardsPlaygroundContext
     session_request = StartBoardsPlaygroundSession(
@@ -181,7 +182,7 @@ async def test_boards_playground_iterate_rejects_cross_org(db, org, other_org, r
     from src.routers.boards.boards_playground import iterate_boards_playground_session
     from src.services.boards.schemas.boards_playground import SendBoardsPlaygroundMessage
 
-    other_board = _mk_board(db, org_id=other_org.id, uid=601, uuid="board_other_iter")
+    other_board = await _mk_board(db, org_id=other_org.id, uid=601, uuid="board_other_iter")
 
     message_request = SendBoardsPlaygroundMessage(
         session_uuid="sess_x",
@@ -225,7 +226,7 @@ async def test_boards_playground_same_org_passes_membership_gate(db, org, regula
     from src.routers.boards.boards_playground import start_boards_playground_session
     from src.services.boards.schemas.boards_playground import StartBoardsPlaygroundSession
 
-    own_board = _mk_board(db, org_id=org.id, uid=701, uuid="board_own_1")
+    own_board = await _mk_board(db, org_id=org.id, uid=701, uuid="board_own_1")
 
     from src.services.boards.schemas.boards_playground import BoardsPlaygroundContext
     session_request = StartBoardsPlaygroundSession(

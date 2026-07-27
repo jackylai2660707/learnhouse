@@ -24,7 +24,7 @@ from src.services.communities.moderation import (
 )
 
 
-def _make_community(db, org, **overrides):
+async def _make_community(db, org, **overrides):
     community = Community(
         id=overrides.pop("id", None),
         org_id=org.id,
@@ -39,8 +39,8 @@ def _make_community(db, org, **overrides):
         update_date=overrides.pop("update_date", "2024-01-01"),
     )
     db.add(community)
-    db.commit()
-    db.refresh(community)
+    await db.commit()
+    await db.refresh(community)
     return community
 
 
@@ -75,8 +75,8 @@ class TestCommunityModerationService:
 
     @pytest.mark.asyncio
     async def test_validate_content_branches_and_wrappers(self, db, org):
-        open_community = _make_community(db, org, id=1, moderation_words=[])
-        moderated_community = _make_community(
+        open_community = await _make_community(db, org, id=1, moderation_words=[])
+        moderated_community = await _make_community(
             db, org, id=2, community_uuid="community_blocked", moderation_words=["bad"]
         )
         json_content = json.dumps(
@@ -180,7 +180,7 @@ class TestParseIsoDatetime:
 
 
 class TestEnforcePostingLimits:
-    def _make_community_with_settings(self, db, org, community_id, settings, uuid_suffix=""):
+    async def _make_community_with_settings(self, db, org, community_id, settings, uuid_suffix=""):
         community = Community(
             id=community_id,
             org_id=org.id,
@@ -196,11 +196,11 @@ class TestEnforcePostingLimits:
             update_date="2024-01-01",
         )
         db.add(community)
-        db.commit()
-        db.refresh(community)
+        await db.commit()
+        await db.refresh(community)
         return community
 
-    def _make_user(self, db, user_id, email_verified=True, creation_date=None):
+    async def _make_user(self, db, user_id, email_verified=True, creation_date=None):
         if creation_date is None:
             creation_date = datetime.now(timezone.utc).isoformat()
         user = User(
@@ -216,11 +216,11 @@ class TestEnforcePostingLimits:
             update_date=datetime.now(timezone.utc).isoformat(),
         )
         db.add(user)
-        db.commit()
-        db.refresh(user)
+        await db.commit()
+        await db.refresh(user)
         return user
 
-    def _make_discussion(self, db, org, community, author_id, discussion_id, creation_date=None):
+    async def _make_discussion(self, db, org, community, author_id, discussion_id, creation_date=None):
         if creation_date is None:
             creation_date = datetime.now(timezone.utc).isoformat()
         discussion = Discussion(
@@ -238,8 +238,8 @@ class TestEnforcePostingLimits:
             update_date=creation_date,
         )
         db.add(discussion)
-        db.commit()
-        db.refresh(discussion)
+        await db.commit()
+        await db.refresh(discussion)
         return discussion
 
     @pytest.mark.asyncio
@@ -249,12 +249,12 @@ class TestEnforcePostingLimits:
 
     @pytest.mark.asyncio
     async def test_email_not_verified_raises_403(self, db, org):
-        community = self._make_community_with_settings(
+        community = await self._make_community_with_settings(
             db, org, community_id=10,
             settings={"require_email_verified": True},
             uuid_suffix="email_check",
         )
-        user = self._make_user(db, user_id=10, email_verified=False)
+        user = await self._make_user(db, user_id=10, email_verified=False)
 
         with pytest.raises(HTTPException) as exc_info:
             await enforce_posting_limits(
@@ -266,14 +266,14 @@ class TestEnforcePostingLimits:
 
     @pytest.mark.asyncio
     async def test_account_too_new_raises_403(self, db, org):
-        community = self._make_community_with_settings(
+        community = await self._make_community_with_settings(
             db, org, community_id=11,
             settings={"min_account_age_days": 30},
             uuid_suffix="acct_age",
         )
         # Account created 1 day ago — younger than 30-day requirement
         recent_creation = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-        user = self._make_user(db, user_id=11, email_verified=True, creation_date=recent_creation)
+        user = await self._make_user(db, user_id=11, email_verified=True, creation_date=recent_creation)
 
         with pytest.raises(HTTPException) as exc_info:
             await enforce_posting_limits(
@@ -285,15 +285,15 @@ class TestEnforcePostingLimits:
 
     @pytest.mark.asyncio
     async def test_slow_mode_raises_429(self, db, org):
-        community = self._make_community_with_settings(
+        community = await self._make_community_with_settings(
             db, org, community_id=12,
             settings={"slow_mode_seconds": 3600},
             uuid_suffix="slow_mode",
         )
-        user = self._make_user(db, user_id=12, email_verified=True)
+        user = await self._make_user(db, user_id=12, email_verified=True)
         # Insert a discussion posted 10 seconds ago
         recent_creation = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
-        self._make_discussion(
+        await self._make_discussion(
             db, org, community, author_id=user.id,
             discussion_id=100, creation_date=recent_creation,
         )
@@ -308,16 +308,16 @@ class TestEnforcePostingLimits:
 
     @pytest.mark.asyncio
     async def test_max_posts_per_day_raises_429(self, db, org):
-        community = self._make_community_with_settings(
+        community = await self._make_community_with_settings(
             db, org, community_id=13,
             settings={"max_posts_per_day": 2},
             uuid_suffix="daily_limit",
         )
-        user = self._make_user(db, user_id=13, email_verified=True)
+        user = await self._make_user(db, user_id=13, email_verified=True)
         # Insert 2 discussions within the past 24 hours (at the limit)
         for i in range(2):
             creation = (datetime.now(timezone.utc) - timedelta(hours=i + 1)).isoformat()
-            self._make_discussion(
+            await self._make_discussion(
                 db, org, community, author_id=user.id,
                 discussion_id=200 + i, creation_date=creation,
             )
@@ -333,7 +333,7 @@ class TestEnforcePostingLimits:
     @pytest.mark.asyncio
     async def test_discussion_with_invalid_date_skipped_in_max_posts_count(self, db, org):
         # Line 119: if created is None: continue
-        community = self._make_community_with_settings(
+        community = await self._make_community_with_settings(
             db, org, community_id=50,
             settings={"max_posts_per_day": 1},
             uuid_suffix="nulldate",
@@ -351,7 +351,7 @@ class TestEnforcePostingLimits:
             update_date="",
         )
         db.add(disc)
-        db.commit()
+        await db.commit()
         # Should NOT raise since the discussion with empty date is skipped
         await enforce_posting_limits(1, community, db)
 
@@ -374,8 +374,8 @@ class TestEnforceAutoLock:
             update_date="2024-01-01",
         )
         db.add(community)
-        db.commit()
-        db.refresh(community)
+        await db.commit()
+        await db.refresh(community)
 
         # Create a user to satisfy the author_id FK
         author = User(
@@ -390,7 +390,7 @@ class TestEnforceAutoLock:
             update_date="2024-01-01",
         )
         db.add(author)
-        db.commit()
+        await db.commit()
 
         # Discussion last updated 10 days ago — older than the 7-day threshold
         old_date = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
@@ -409,8 +409,8 @@ class TestEnforceAutoLock:
             update_date=old_date,
         )
         db.add(discussion)
-        db.commit()
-        db.refresh(discussion)
+        await db.commit()
+        await db.refresh(discussion)
 
         assert discussion.is_locked is False
 
@@ -436,8 +436,8 @@ class TestEnforceAutoLock:
             update_date="2024-01-01",
         )
         db.add(community)
-        db.commit()
-        db.refresh(community)
+        await db.commit()
+        await db.refresh(community)
 
         disc = Discussion(
             title="Test",
@@ -452,11 +452,11 @@ class TestEnforceAutoLock:
             is_locked=False,
         )
         db.add(disc)
-        db.commit()
-        db.refresh(disc)
+        await db.commit()
+        await db.refresh(disc)
 
         await enforce_auto_lock(disc, community, db)
-        db.refresh(disc)
+        await db.refresh(disc)
         assert disc.is_locked is False  # Should NOT be locked since date is unparseable
 
 
@@ -492,7 +492,7 @@ class TestCheckContentModerationEdgeCases:
 
 
 class TestValidateContentLengthAndLinks:
-    def _make_community(self, db, org, community_id, uuid_suffix=""):
+    async def _make_community(self, db, org, community_id, uuid_suffix=""):
         community = Community(
             id=community_id,
             org_id=org.id,
@@ -507,13 +507,13 @@ class TestValidateContentLengthAndLinks:
             update_date="2024-01-01",
         )
         db.add(community)
-        db.commit()
-        db.refresh(community)
+        await db.commit()
+        await db.refresh(community)
         return community
 
     @pytest.mark.asyncio
     async def test_content_below_min_length_raises(self, db, org):
-        community = self._make_community(db, org, community_id=30, uuid_suffix="minlen")
+        community = await self._make_community(db, org, community_id=30, uuid_suffix="minlen")
 
         with pytest.raises(HTTPException) as exc_info:
             await validate_content_for_community(
@@ -529,7 +529,7 @@ class TestValidateContentLengthAndLinks:
 
     @pytest.mark.asyncio
     async def test_content_above_max_length_raises(self, db, org):
-        community = self._make_community(db, org, community_id=31, uuid_suffix="maxlen")
+        community = await self._make_community(db, org, community_id=31, uuid_suffix="maxlen")
         long_content = "x" * 200
 
         with pytest.raises(HTTPException) as exc_info:
@@ -546,7 +546,7 @@ class TestValidateContentLengthAndLinks:
 
     @pytest.mark.asyncio
     async def test_block_links_raises_when_link_present(self, db, org):
-        community = self._make_community(db, org, community_id=32, uuid_suffix="blocklinks")
+        community = await self._make_community(db, org, community_id=32, uuid_suffix="blocklinks")
 
         with pytest.raises(HTTPException) as exc_info:
             await validate_content_for_community(

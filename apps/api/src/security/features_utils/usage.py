@@ -938,6 +938,205 @@ def refund_ai_credit(org_id: int, amount: int = 1) -> int:
     return int(script(keys=[f"ai_credits_used:{org_id}"], args=[str(int(amount))]))
 
 
+_ATOMIC_RESERVE_ONCE_LUA = """
+local used_key = KEYS[1]
+local purchased_key = KEYS[2]
+local reservation_key = KEYS[3]
+local period_key = KEYS[4]
+local requested_period = ARGV[5]
+local marker_ttl = tonumber(ARGV[6] or "0")
+local current_period = redis.call("GET", period_key) or "0"
+if redis.call("EXISTS", reservation_key) == 1 then
+    return tonumber(redis.call("GET", used_key) or "0")
+end
+if current_period ~= requested_period then
+    return -2
+end
+local base = tonumber(ARGV[1])
+local extra = tonumber(ARGV[2])
+local amount = tonumber(ARGV[3])
+local unlimited = ARGV[4]
+local used = tonumber(redis.call("GET", used_key) or "0")
+if unlimited ~= "1" then
+    local purchased = tonumber(redis.call("GET", purchased_key) or "0")
+    if base + extra + purchased - used < amount then
+        return -1
+    end
+end
+local new_used = redis.call("INCRBY", used_key, amount)
+redis.call("SET", reservation_key, amount)
+if marker_ttl > 0 then
+    redis.call("EXPIRE", reservation_key, marker_ttl)
+end
+return new_used
+"""
+
+
+async def reserve_ai_credit_once(
+    org_id: int,
+    db_session: AsyncSession,
+    operation_key: str,
+    amount: int = 1,
+    period_token: str | None = None,
+    marker_ttl_seconds: int | None = None,
+) -> int:
+    """Reserve credits once for a durable operation.
+
+    The Redis marker and usage increment happen in one Lua script. A worker can
+    therefore safely repeat this call after losing its database lease without
+    charging the organization twice. Durable callers leave
+    ``marker_ttl_seconds`` unset; short-lived request operations may set a TTL
+    so unique idempotency markers do not accumulate indefinitely.
+    """
+    from src.security.features_utils.resolve import resolve_feature
+
+    if not operation_key or len(operation_key) > 160:
+        raise ValueError("A bounded operation key is required")
+    if amount <= 0:
+        raise ValueError("Credit amount must be positive")
+
+    org_config = await _load_org_config_for_ai(org_id, db_session)
+    if org_config is None:
+        raise HTTPException(status_code=404, detail="Organization has no config")
+
+    resolved = resolve_feature("ai", org_config.config or {}, org_id)
+    if not resolved["enabled"]:
+        raise HTTPException(status_code=403, detail="AI is not enabled for this organization")
+
+    org_plan = _get_org_plan(org_config)
+    base_credits = -1 if _is_non_saas() else get_ai_credit_limit(org_plan)
+    if base_credits == 0:
+        raise HTTPException(
+            status_code=403,
+            detail="AI credits are not available on the free plan. Please upgrade to Standard or Pro.",
+        )
+
+    config = org_config.config or {}
+    extra = 0
+    if config.get("config_version", "1.0").startswith("2"):
+        extra = config.get("overrides", {}).get("ai", {}).get("extra_limit", 0) or 0
+
+    r = _get_redis_client()
+    immutable_period = period_token or get_ai_credit_period_token(org_id, r)
+    try:
+        reserve = r.register_script(_ATOMIC_RESERVE_ONCE_LUA)
+        new_used = reserve(
+            keys=[
+                f"ai_credits_used:{org_id}",
+                f"ai_credits_purchased:{org_id}",
+                f"ai_credit_reservation:{org_id}:{immutable_period}:{operation_key}",
+                f"ai_credits_period:{org_id}",
+            ],
+            args=[
+                str(max(0, base_credits)),
+                str(int(extra)),
+                str(int(amount)),
+                "1" if base_credits == -1 else "0",
+                immutable_period,
+                str(max(0, int(marker_ttl_seconds or 0))),
+            ],
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="AI credit store temporarily unavailable. Please retry.",
+        )
+
+    if int(new_used) == -1:
+        raise HTTPException(status_code=403, detail="AI credit limit reached.")
+    if int(new_used) == -2:
+        raise HTTPException(
+            status_code=409,
+            detail="AI credit billing period changed. Please start a new operation.",
+        )
+    return int(new_used)
+
+
+_REFUND_ONCE_LUA = """
+local used_key = KEYS[1]
+local reservation_key = KEYS[2]
+local refund_key = KEYS[3]
+local period_key = KEYS[4]
+local requested_period = ARGV[2]
+local marker_ttl = tonumber(ARGV[3] or "0")
+local current = tonumber(redis.call("GET", used_key) or "0")
+if redis.call("EXISTS", refund_key) == 1 then
+    return current
+end
+local reserved = tonumber(redis.call("GET", reservation_key) or "0")
+if reserved <= 0 then
+    return current
+end
+local current_period = redis.call("GET", period_key) or "0"
+if current_period ~= requested_period then
+    redis.call("SET", refund_key, 0)
+    if marker_ttl > 0 then
+        redis.call("EXPIRE", refund_key, marker_ttl)
+    end
+    return current
+end
+local decrement = math.min(reserved, tonumber(ARGV[1]))
+local new_val = math.max(0, current - decrement)
+redis.call("SET", used_key, new_val)
+redis.call("SET", refund_key, decrement)
+if marker_ttl > 0 then
+    redis.call("EXPIRE", refund_key, marker_ttl)
+end
+return new_val
+"""
+
+
+def get_ai_credit_period_token(org_id: int, redis_client=None) -> str:
+    """Return the immutable token for the organization's current credit period."""
+    r = redis_client or _get_redis_client()
+    try:
+        raw = r.get(f"ai_credits_period:{org_id}")
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="AI credit store temporarily unavailable. Please retry.",
+        )
+    if raw is None:
+        return "0"
+    return raw.decode() if isinstance(raw, bytes) else str(raw)
+
+
+def refund_ai_credit_once(
+    org_id: int,
+    operation_key: str,
+    amount: int = 1,
+    period_token: str | None = None,
+    marker_ttl_seconds: int | None = None,
+) -> int:
+    """Refund an operation at most once, including after retries.
+
+    ``marker_ttl_seconds`` is optional so durable job semantics remain
+    unchanged while ephemeral request markers can have bounded retention.
+    """
+    if not operation_key or len(operation_key) > 160:
+        raise ValueError("A bounded operation key is required")
+    if amount <= 0:
+        return 0
+    r = _get_redis_client()
+    immutable_period = period_token or get_ai_credit_period_token(org_id, r)
+    refund = r.register_script(_REFUND_ONCE_LUA)
+    return int(
+        refund(
+            keys=[
+                f"ai_credits_used:{org_id}",
+                f"ai_credit_reservation:{org_id}:{immutable_period}:{operation_key}",
+                f"ai_credit_refund:{org_id}:{immutable_period}:{operation_key}",
+                f"ai_credits_period:{org_id}",
+            ],
+            args=[
+                str(int(amount)),
+                immutable_period,
+                str(max(0, int(marker_ttl_seconds or 0))),
+            ],
+        )
+    )
+
+
 def add_ai_credits(org_id: int, amount: int) -> int:
     """Add purchased AI credits to the organization."""
     r = _get_redis_client()
@@ -951,10 +1150,21 @@ def set_ai_credits(org_id: int, amount: int) -> int:
     return amount
 
 
+_RESET_AI_CREDIT_PERIOD_LUA = """
+local next_period = redis.call("INCR", KEYS[2])
+redis.call("SET", KEYS[1], 0)
+return next_period
+"""
+
+
 def reset_ai_credits_usage(org_id: int) -> bool:
     """Reset AI credit usage for the organization (for new billing period)."""
     r = _get_redis_client()
-    r.set(f"ai_credits_used:{org_id}", 0)
+    reset = r.register_script(_RESET_AI_CREDIT_PERIOD_LUA)
+    reset(
+        keys=[f"ai_credits_used:{org_id}", f"ai_credits_period:{org_id}"],
+        args=[],
+    )
     return True
 
 

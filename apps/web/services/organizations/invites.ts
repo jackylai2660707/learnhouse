@@ -59,11 +59,15 @@ export async function inviteBatchUsers(
   org_id: any,
   emails: string,
   invite_code_uuid: string | undefined,
+  role_uuid: string | undefined,
   access_token: any
 ) {
   const params = new URLSearchParams({ emails })
   if (invite_code_uuid) {
     params.append('invite_code_uuid', invite_code_uuid)
+  }
+  if (role_uuid) {
+    params.append('role_uuid', role_uuid)
   }
   const result = await fetch(
     `${getAPIUrl()}orgs/${org_id}/invites/users/batch?${params.toString()}`,

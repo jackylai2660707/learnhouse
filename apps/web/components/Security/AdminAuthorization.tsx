@@ -1,11 +1,11 @@
 'use client';
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useCallback, useMemo } from 'react';
 import { useLHSession } from '@components/Contexts/LHSessionContext';
 import useAdminStatus from '@components/Hooks/useAdminStatus';
 import { usePathname, useRouter } from 'next/navigation';
 import PageLoading from '@components/Objects/Loaders/PageLoading';
 import { getUriWithOrg } from '@services/config/config';
-import { useOrg } from '@components/Contexts/OrgContext';
+import { useOrgMembership } from '@components/Contexts/OrgContext';
 
 type AuthorizationProps = {
   children: React.ReactNode;
@@ -24,11 +24,10 @@ const ADMIN_PATHS = [
 
 const AdminAuthorization: React.FC<AuthorizationProps> = ({ children, authorizationMode }) => {
   const session = useLHSession() as any;
-  const org = useOrg() as any;
+  const { org, orgslug } = useOrgMembership();
   const pathname = usePathname();
   const router = useRouter();
   const { isAdmin, loading } = useAdminStatus() as any
-  const [isAuthorized, setIsAuthorized] = useState(false);
 
   const isUserAuthenticated = useMemo(() => session.status === 'authenticated', [session.status]);
 
@@ -38,47 +37,40 @@ const AdminAuthorization: React.FC<AuthorizationProps> = ({ children, authorizat
       return false;
     }
 
-    // Convert pattern to a regex pattern
-    const regexPattern = new RegExp(`^${pattern.replace(/[\/.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\\*/g, '.*')}$`);
+    const regexPattern = pattern
+      .split('*')
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('.*');
 
-    // Test the pathname against the regex pattern
-    return regexPattern.test(pathname);
+    return new RegExp(`^${regexPattern}$`).test(pathname);
   }, []);
 
 
   const isAdminPath = useMemo(() => ADMIN_PATHS.some(path => checkPathname(path, pathname)), [pathname, checkPathname]);
 
-  const authorizeUser = useCallback(() => {
-    if (loading) {
-      return; // Wait until the admin status is determined
-    }
+  const isAuthorized = isUserAuthenticated && (
+    authorizationMode === 'component'
+      ? isAdmin
+      : !isAdminPath || isAdmin
+  );
 
-    if (!isUserAuthenticated) {
-      router.push(getUriWithOrg(org.slug, '/login'));
+  useEffect(() => {
+    if (loading || session.status === 'loading') {
       return;
     }
 
-    if (authorizationMode === 'page') {
-      if (isAdminPath) {
-        if (isAdmin) {
-          setIsAuthorized(true);
-        } else {
-          setIsAuthorized(false);
-          router.push('/dash');
-        }
-      } else {
-        setIsAuthorized(true);
-      }
-    } else if (authorizationMode === 'component') {
-      setIsAuthorized(isAdmin);
+    if (!isUserAuthenticated) {
+      const loginOrgSlug = org?.slug || orgslug;
+      router.replace(loginOrgSlug ? getUriWithOrg(loginOrgSlug, '/login') : '/login');
+      return;
     }
-  }, [loading, isUserAuthenticated, isAdmin, isAdminPath, authorizationMode, router]);
 
-  useEffect(() => {
-    authorizeUser();
-  }, [authorizeUser]);
+    if (authorizationMode === 'page' && isAdminPath && !isAdmin) {
+      router.replace('/dash');
+    }
+  }, [loading, session.status, isUserAuthenticated, isAdmin, isAdminPath, authorizationMode, router, org?.slug, orgslug]);
 
-  if (loading) {
+  if (loading || session.status === 'loading' || !isUserAuthenticated) {
     return (
       <div className="flex justify-center items-center h-screen">
         <PageLoading />
@@ -89,7 +81,7 @@ const AdminAuthorization: React.FC<AuthorizationProps> = ({ children, authorizat
   if (authorizationMode === 'page' && !isAuthorized) {
     return (
       <div className="flex justify-center items-center h-screen">
-        <h1 className="text-2xl">You are not authorized to access this page</h1>
+        <h1 className="text-2xl">你沒有權限存取此頁面</h1>
       </div>
     );
   }

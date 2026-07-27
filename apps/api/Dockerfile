@@ -25,7 +25,7 @@ EXPOSE 9000
 
 # Health check endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-  CMD curl -f http://localhost:9000/api/v1/health || exit 1
+  CMD curl -f http://localhost:9000/api/v1/health/ready || exit 1
 
 # Use entrypoint script
 ENTRYPOINT ["./docker-entrypoint.sh"]

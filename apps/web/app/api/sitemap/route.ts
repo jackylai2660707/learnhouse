@@ -1,9 +1,10 @@
-import { getOrgCourses, getCourseMetadata } from '@services/courses/courses'
-import { getOrganizationContextInfo } from '@services/organizations/orgs'
-import { getOrgCollections } from '@services/courses/collections'
-import { getOrgPodcasts } from '@services/podcasts/podcasts'
-import { getCommunities } from '@services/communities/communities'
 import { NextRequest, NextResponse } from 'next/server'
+
+const API_URL = `${(
+  process.env.NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL
+  || process.env.LEARNHOUSE_BACKEND_URL
+  || 'http://localhost:1338'
+).replace(/\/+$/, '')}/api/v1/`
 
 function getBaseUrlFromRequest(request: NextRequest): string {
   const host = request.headers.get('host') || 'localhost'
@@ -32,7 +33,7 @@ export async function GET(request: NextRequest) {
     })
   }
 
-  const orgInfo = await getOrganizationContextInfo(orgSlug, null)
+  const orgInfo = await fetchBackendJson(`orgs/slug/${encodeURIComponent(orgSlug)}`)
 
   let sitemapUrls: SitemapUrl[] = []
 
@@ -48,7 +49,7 @@ export async function GET(request: NextRequest) {
       break
     }
     case 'courses': {
-      const courses = await getOrgCourses(orgSlug, null).catch(() => [])
+      const courses = await fetchBackendJson(`courses/org_slug/${encodeURIComponent(orgSlug)}/page/1/limit/100`).catch(() => [])
       for (const course of courses) {
         sitemapUrls.push({
           loc: `${baseUrl}course/${course.course_uuid.replace('course_', '')}`,
@@ -60,15 +61,11 @@ export async function GET(request: NextRequest) {
       break
     }
     case 'activities': {
-      const courses = await getOrgCourses(orgSlug, null).catch(() => [])
+      const courses = await fetchBackendJson(`courses/org_slug/${encodeURIComponent(orgSlug)}/page/1/limit/100`).catch(() => [])
       for (const course of courses) {
         try {
-          const meta = await getCourseMetadata(
-            course.course_uuid.replace('course_', ''),
-            null,
-            null,
-            { slim: true }
-          )
+          const courseId = course.course_uuid.replace('course_', '')
+          const meta = await fetchBackendJson(`courses/course_${encodeURIComponent(courseId)}/meta?slim=true`)
           if (meta?.chapters) {
             for (const chapter of meta.chapters) {
               if (chapter.activities) {
@@ -93,7 +90,7 @@ export async function GET(request: NextRequest) {
       break
     }
     case 'collections': {
-      const collections = await getOrgCollections(orgInfo.id).catch(() => [])
+      const collections = await fetchBackendJson(`collections/org/${orgInfo.id}/page/1/limit/10`).catch(() => [])
       for (const collection of collections) {
         sitemapUrls.push({
           loc: `${baseUrl}collections/${collection.collection_uuid.replace('collection_', '')}`,
@@ -105,7 +102,7 @@ export async function GET(request: NextRequest) {
       break
     }
     case 'podcasts': {
-      const podcasts = await getOrgPodcasts(orgSlug, null).catch(() => [])
+      const podcasts = await fetchBackendJson(`podcasts/org_slug/${encodeURIComponent(orgSlug)}/page/1/limit/100`).catch(() => [])
       for (const podcast of podcasts) {
         sitemapUrls.push({
           loc: `${baseUrl}podcast/${podcast.podcast_uuid.replace('podcast_', '')}`,
@@ -117,7 +114,7 @@ export async function GET(request: NextRequest) {
       break
     }
     case 'communities': {
-      const communities = await getCommunities(orgInfo.id, 1, 1000, null).catch(() => [])
+      const communities = await fetchBackendJson(`communities/org/${orgInfo.id}/page/1/limit/1000`).catch(() => [])
       for (const community of communities) {
         sitemapUrls.push({
           loc: `${baseUrl}community/${community.community_uuid.replace('community_', '')}`,
@@ -147,6 +144,18 @@ interface SitemapUrl {
 }
 
 const SITEMAP_TYPES = ['pages', 'courses', 'activities', 'collections', 'podcasts', 'communities']
+
+async function fetchBackendJson(path: string) {
+  const response = await fetch(`${API_URL}${path}`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    throw new Error(`Backend request failed: ${response.status}`)
+  }
+  return response.json()
+}
 
 function generateSitemapIndex(baseUrl: string): string {
   const sitemaps = SITEMAP_TYPES.map(type => `

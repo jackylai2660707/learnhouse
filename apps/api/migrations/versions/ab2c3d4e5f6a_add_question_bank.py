@@ -54,7 +54,7 @@ def upgrade() -> None:
             sa.Column('assignment_type', sa.Enum('FILE_SUBMISSION', 'QUIZ', 'FORM', 'CODE', 'SHORT_ANSWER', 'NUMBER_ANSWER', 'OTHER', name='assignmenttasktypeenum'), nullable=False),
             sa.Column('contents', sa.JSON(), nullable=True),
             sa.Column('tags', sa.JSON(), nullable=True),
-            sa.Column('difficulty', sa.String(), nullable=False, server_default='intermediate'),
+            sa.Column('difficulty', sa.String(), nullable=False, server_default='beginner'),
             sa.Column('visibility', sa.String(), nullable=False, server_default='ORG'),
             sa.Column('category_id', sa.Integer(), nullable=True),
             sa.Column('org_id', sa.Integer(), nullable=False),

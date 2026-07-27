@@ -105,6 +105,48 @@ export async function updateUserRole(
   return res
 }
 
+export async function updateUsersRole(
+  org_id: any,
+  user_ids: number[],
+  role_uuid: string,
+  access_token: string
+) {
+  const params = new URLSearchParams()
+  user_ids.forEach((id) => params.append('user_ids', id.toString()))
+  const result = await fetch(
+    `${getAPIUrl()}orgs/${org_id}/users/batch/role/${role_uuid}?${params.toString()}`,
+    RequestBodyWithAuthHeader('PUT', null, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
+export async function importUsersCsv(
+  org_id: any,
+  file: File,
+  access_token: string
+) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const result = await fetch(
+    `${getAPIUrl()}orgs/${org_id}/users/import/csv`,
+    RequestBodyFormWithAuthHeader('POST', formData, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
+export async function downloadUsersImportTemplate(
+  org_id: any,
+  access_token: string
+) {
+  const result = await fetch(
+    `${getAPIUrl()}orgs/${org_id}/users/import/template`,
+    RequestBodyWithAuthHeader('GET', null, null, access_token)
+  )
+  return result
+}
+
 export async function updateOrgLanding(
   org_id: any,
   landing_object: any,

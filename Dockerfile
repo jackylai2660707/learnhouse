@@ -1,7 +1,7 @@
 # ───────────────────────────────────────────────
 # Stage 1: Frontend dependency install
 # ───────────────────────────────────────────────
-FROM oven/bun:1-alpine AS frontend-deps
+FROM oven/bun:1.3.14-alpine AS frontend-deps
 RUN apk update && apk add --no-cache libc6-compat && rm -rf /var/cache/apk/*
 WORKDIR /app
 
@@ -11,10 +11,11 @@ RUN bun install --frozen-lockfile
 # ───────────────────────────────────────────────
 # Stage 2: Frontend build
 # ───────────────────────────────────────────────
-FROM oven/bun:1-alpine AS frontend-builder
-WORKDIR /app
+FROM oven/bun:1.3.14-alpine AS frontend-builder
+WORKDIR /workspace/apps/web
 COPY --from=frontend-deps /app/node_modules ./node_modules
 COPY apps/web .
+COPY apps/api/config/code-language-capabilities.json /workspace/apps/api/config/code-language-capabilities.json
 
 # Disable telemetry during build
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -38,17 +39,21 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN addgroup --system --gid 1001 nodejs \
     && adduser --system --uid 1001 nextjs
 
-COPY --from=frontend-builder /app/public ./public
-
-RUN mkdir .next && chown nextjs:nodejs .next
-
-# Leverage output traces to reduce image size
-COPY --from=frontend-builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=frontend-builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# Importing the shared API language manifest makes Next trace from the
+# monorepo root, so the runnable app is nested under apps/web in standalone
+# output. Preserve that layout: generated .next/node_modules aliases use
+# relative links back to apps/web/node_modules and break if the tree is
+# flattened.
+COPY --from=frontend-builder --chown=nextjs:nodejs /workspace/apps/web/.next/standalone ./
+COPY --from=frontend-builder --chown=nextjs:nodejs /workspace/apps/web/public ./apps/web/public
+COPY --from=frontend-builder --chown=nextjs:nodejs /workspace/apps/web/.next/static ./apps/web/.next/static
 
 # Copy server wrapper for runtime environment variable injection
-COPY --chown=nextjs:nodejs apps/web/server-wrapper.js ./
-RUN chmod +x server-wrapper.js
+COPY --chown=nextjs:nodejs apps/web/server-wrapper.js ./apps/web/server-wrapper.js
+RUN chmod +x apps/web/server-wrapper.js \
+    && test -f apps/web/server.js \
+    && find apps/web/.next/node_modules -maxdepth 1 -type l \
+       -name 'require-in-the-middle-*' | grep -q .
 
 # ───────────────────────────────────────────────
 # Stage 4: Collab server build
@@ -84,9 +89,6 @@ RUN apt-get update \
 
 ENV PATH="/root/.bun/bin:${PATH}"
 
-# Copy the frontend standalone build
-COPY --from=frontend-runner /app /app/web
-
 # Backend: install deps first (better layer caching)
 WORKDIR /app/api
 COPY ./apps/api/uv.lock ./apps/api/pyproject.toml ./
@@ -97,6 +99,10 @@ COPY ./apps/api ./
 # Remove Enterprise Edition folder for public builds
 ARG LEARNHOUSE_PUBLIC=false
 RUN if [ "$LEARNHOUSE_PUBLIC" = "true" ]; then rm -rf /app/api/ee; fi
+
+# Copy the frontend after backend dependencies. Frontend-only changes should
+# not force a costly Python dependency rebuild (notably asyncpg compilation).
+COPY --from=frontend-runner /app /app/web
 
 # Collab server: copy built JS + production deps
 WORKDIR /app/collab

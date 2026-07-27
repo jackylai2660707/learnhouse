@@ -20,19 +20,29 @@ from fastapi.middleware.gzip import GZipMiddleware
 from config.config import LearnHouseConfig, get_learnhouse_config
 from src.core.ee_hooks import register_ee_middlewares
 from src.core.events.events import shutdown_app, startup_app
+from src.core.events.logs import configure_logging
 from src.core.middleware.cors import configure_cors
+from src.core.middleware.request_logging import RequestLoggingMiddleware
+from src.core.observability.redaction import redact_sentry_event
+from src.security.csrf import configure_csrf
 from src.router import v1_router
 from src.routers.content_files import router as content_files_router
 from src.routers.local_content import router as local_content_router
 
 
 learnhouse_config: LearnHouseConfig = get_learnhouse_config()
+configure_logging(
+    development_mode=learnhouse_config.general_config.development_mode,
+)
 
 if learnhouse_config.general_config.sentry_config.dsn:
     sentry_sdk.init(
         dsn=learnhouse_config.general_config.sentry_config.dsn,
         environment=learnhouse_config.general_config.env,
         send_default_pii=False,
+        before_send=redact_sentry_event,
+        before_send_transaction=redact_sentry_event,
+        before_send_log=redact_sentry_event,
         enable_logs=True,
         traces_sample_rate=1.0 if learnhouse_config.general_config.development_mode else 0.3,
         profile_session_sample_rate=1.0 if learnhouse_config.general_config.development_mode else 0.1,
@@ -53,10 +63,14 @@ app = FastAPI(
     version="1.2.2",
 )
 
-# Middleware
-configure_cors(app)
+# Middleware executes in reverse registration order. Request logging wraps the
+# full browser-security chain; CORS remains outside CSRF so rejected requests
+# still include browser-readable CORS headers.
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 register_ee_middlewares(app)
+configure_csrf(app)
+configure_cors(app)
+app.add_middleware(RequestLoggingMiddleware)
 
 # Lifecycle
 app.add_event_handler("startup", startup_app(app))

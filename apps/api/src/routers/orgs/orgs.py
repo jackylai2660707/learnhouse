@@ -1,5 +1,5 @@
 from typing import List, Literal, Optional, Union
-from fastapi import APIRouter, Depends, Request, UploadFile, Query
+from fastapi import APIRouter, Depends, File, Request, UploadFile, Query
 from sqlmodel.ext.asyncio.session import AsyncSession
 from src.services.orgs.invites import (
     create_invite_code,
@@ -9,13 +9,16 @@ from src.services.orgs.invites import (
 )
 from src.services.orgs.join import JoinOrg, join_org
 from src.services.orgs.users import (
+    bulk_create_organization_users_from_csv,
     export_organization_users_csv,
+    get_bulk_user_import_template_csv,
     get_list_of_invited_users,
     get_organization_users,
     invite_batch_users,
     remove_batch_users_from_org,
     remove_invited_user,
     remove_user_from_org,
+    update_batch_user_roles,
     update_user_role,
 )
 from src.db.organization_config import OrganizationConfigBase
@@ -181,6 +184,52 @@ async def api_export_org_users(
 
 
 @router.get(
+    "/{org_id}/users/import/template",
+    summary="Download bulk user import CSV template",
+    description="Download a CSV template for bulk creating organization users.",
+    responses={
+        200: {"description": "CSV import template."},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Caller lacks permission to create users"},
+        404: {"description": "Organization not found"},
+    },
+)
+async def api_get_bulk_user_import_template(
+    request: Request,
+    org_id: int,
+    current_user: PublicUser = Depends(get_current_user),
+    db_session: AsyncSession = Depends(get_db_session),
+):
+    return await get_bulk_user_import_template_csv(
+        request, org_id, db_session, current_user
+    )
+
+
+@router.post(
+    "/{org_id}/users/import/csv",
+    summary="Bulk create organization users from CSV",
+    description="Create many users from a CSV file and attach them to the organization.",
+    responses={
+        200: {"description": "CSV import result."},
+        400: {"description": "Invalid CSV or user data."},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Caller lacks permission to create users"},
+        404: {"description": "Organization not found"},
+    },
+)
+async def api_bulk_create_org_users_from_csv(
+    request: Request,
+    org_id: int,
+    file: UploadFile = File(...),
+    current_user: PublicUser = Depends(get_current_user),
+    db_session: AsyncSession = Depends(get_db_session),
+):
+    return await bulk_create_organization_users_from_csv(
+        request, org_id, file, db_session, current_user
+    )
+
+
+@router.get(
     "/{org_id}/users",
     summary="List organization users",
     description=(
@@ -244,6 +293,33 @@ async def api_join_an_org(
     Get single Org by ID
     """
     return await join_org(request, args, current_user, db_session)
+
+
+@router.put(
+    "/{org_id}/users/batch/role/{role_uuid}",
+    summary="Update multiple user roles in organization",
+    description="Update the role of multiple users within an organization by role UUID.",
+    responses={
+        200: {"description": "User roles updated."},
+        401: {"description": "Not authenticated"},
+        403: {"description": "Caller lacks permission to change roles"},
+        404: {"description": "Organization, users, or role not found"},
+    },
+)
+async def api_update_batch_user_roles(
+    request: Request,
+    org_id: int,
+    role_uuid: str,
+    user_ids: List[int] = Query(..., description="List of user IDs to update"),
+    current_user: PublicUser = Depends(get_current_user),
+    db_session: AsyncSession = Depends(get_db_session),
+):
+    """
+    Update multiple user roles
+    """
+    return await update_batch_user_roles(
+        request, org_id, user_ids, role_uuid, db_session, current_user
+    )
 
 
 @router.put(
@@ -924,6 +1000,7 @@ async def api_invite_batch_users(
     org_id: int,
     emails: str,
     invite_code_uuid: Optional[str] = None,
+    role_uuid: Optional[str] = None,
     current_user: PublicUser = Depends(get_current_user),
     db_session: AsyncSession = Depends(get_db_session),
 ):
@@ -931,7 +1008,7 @@ async def api_invite_batch_users(
     Invite batch users by emails
     """
     return await invite_batch_users(
-        request, org_id, emails, invite_code_uuid, db_session, current_user
+        request, org_id, emails, invite_code_uuid, role_uuid, db_session, current_user
     )
 
 

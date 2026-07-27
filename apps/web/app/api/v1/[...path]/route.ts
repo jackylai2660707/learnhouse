@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getBackendUrl } from '@services/config/config'
+import { safeErrorType } from '@/lib/server-safe-logging'
+
+const BACKEND_URL = (
+  process.env.NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL
+  || process.env.LEARNHOUSE_BACKEND_URL
+  || 'http://localhost:1338'
+).replace(/\/+$/, '')
 
 // Allow large file uploads (videos, SCORM packages) to pass through
 export const maxDuration = 300 // 5 minutes
@@ -15,7 +21,7 @@ const SKIP_RESPONSE_HEADERS = new Set(['connection', 'keep-alive', 'transfer-enc
 async function proxyToBackend(request: NextRequest): Promise<Response> {
   const path = request.nextUrl.pathname
   const search = request.nextUrl.search
-  const backendUrl = `${getBackendUrl().replace(/\/+$/, '')}${path}${search}`
+  const backendUrl = `${BACKEND_URL}${path}${search}`
 
   // Forward all request headers except hop-by-hop ones
   const headers = new Headers()
@@ -65,12 +71,16 @@ async function proxyToBackend(request: NextRequest): Promise<Response> {
       statusText: backendResponse.statusText,
       headers: responseHeaders,
     })
-  } catch (error: any) {
+  } catch (error: unknown) {
     clearTimeout(timeoutId)
-    if (error.name === 'AbortError') {
+    if (error instanceof Error && error.name === 'AbortError') {
       return NextResponse.json({ error: 'Request timeout' }, { status: 504 })
     }
-    console.error(`Failed to proxy ${backendUrl}:`, error.message || error)
+    console.error('[api-proxy] request failed', {
+      error_type: safeErrorType(error),
+      method: request.method,
+      path,
+    })
     return NextResponse.json(
       { error: 'Backend unavailable' },
       { status: 502 }

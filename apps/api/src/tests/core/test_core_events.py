@@ -8,7 +8,6 @@ import src.core.ee_hooks as ee_hooks
 import src.core.events.autoinstall as autoinstall
 import src.core.events.content as content
 import src.core.events.events as events
-import src.core.events.logs as logs
 
 
 class _FakeResult:
@@ -137,37 +136,6 @@ async def test_check_content_directory_skips_existing_directory(monkeypatch):
     assert calls == []
 
 
-@pytest.mark.asyncio
-async def test_create_logs_dir_creates_missing_directory(monkeypatch):
-    calls = []
-    monkeypatch.setattr(logs.os.path, "exists", lambda path: False)
-    monkeypatch.setattr(logs.os, "mkdir", lambda path: calls.append(path))
-
-    await logs.create_logs_dir()
-
-    assert calls == ["logs"]
-
-
-@pytest.mark.asyncio
-async def test_init_logging_configures_logging(monkeypatch):
-    calls = []
-
-    async def create_logs_dir():
-        calls.append("create")
-
-    monkeypatch.setattr(logs, "create_logs_dir", create_logs_dir)
-    monkeypatch.setattr(logs.logging, "FileHandler", lambda *args, **kwargs: object())
-    monkeypatch.setattr(logs.logging, "StreamHandler", lambda *args, **kwargs: object())
-    monkeypatch.setattr(logs.logging, "basicConfig", lambda **kwargs: calls.append(kwargs))
-    monkeypatch.setattr(logs.logging, "info", lambda message: calls.append(message))
-
-    await logs.init_logging()
-
-    assert calls[0] == "create"
-    assert calls[1]["level"] == logging.INFO
-    assert calls[-1] == "Logging initiated"
-
-
 def test_is_ee_available(monkeypatch):
     monkeypatch.setenv("LEARNHOUSE_DISABLE_EE", "1")
     assert ee_hooks.is_ee_available() is False
@@ -288,9 +256,6 @@ async def test_startup_and_shutdown_app(monkeypatch):
     async def connect_to_db(app_):
         calls.append(("connect", app_))
 
-    async def create_logs_dir():
-        calls.append("logs")
-
     async def check_content_directory():
         calls.append("content")
 
@@ -301,7 +266,6 @@ async def test_startup_and_shutdown_app(monkeypatch):
         calls.append("install")
 
     monkeypatch.setattr(events, "connect_to_db", connect_to_db)
-    monkeypatch.setattr(events, "create_logs_dir", create_logs_dir)
     monkeypatch.setattr(events, "check_content_directory", check_content_directory)
     monkeypatch.setattr(events, "auto_install", fake_auto_install)
     monkeypatch.setattr(events, "_reconcile_packs", fake_reconcile_packs)
@@ -335,7 +299,7 @@ async def test_startup_and_shutdown_app(monkeypatch):
     await start_app()
 
     assert app.learnhouse_config.name == "cfg"
-    assert calls[:5] == [("connect", app), "logs", "content", "install", "reconcile"]
+    assert calls[:4] == [("connect", app), "content", "install", "reconcile"]
     assert "cleanup" in calls
     assert calls[-1] == ("ee", app)
     assert created_tasks

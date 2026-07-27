@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from sqlmodel import select
 
-from src.db.organization_config import OrganizationConfig
+from src.db.organization_config import GeneralCustomization, OrganizationConfig
 from src.routers.orgs.orgs import api_update_org_default_language_config
 from src.services.orgs.orgs import (
     get_org_default_language,
@@ -129,6 +129,9 @@ class TestUpdateOrgDefaultLanguageConfig:
 
 
 class TestGetOrgDefaultLanguage:
+    def test_new_organization_customization_defaults_to_zh(self):
+        assert GeneralCustomization().default_language == "zh"
+
     @pytest.mark.asyncio
     async def test_returns_v2_value_when_present(self, db, org):
         row = await _make_org_config(
@@ -154,21 +157,21 @@ class TestGetOrgDefaultLanguage:
         assert get_org_default_language(row) == "es"
 
     @pytest.mark.asyncio
-    async def test_returns_en_when_key_absent(self, db, org):
+    async def test_returns_zh_when_key_absent(self, db, org):
         row = await _make_org_config(
             db,
             org,
             {"config_version": "2.0", "customization": {"general": {}}},
         )
-        assert get_org_default_language(row) == "en"
+        assert get_org_default_language(row) == "zh"
 
-    def test_returns_en_when_org_config_is_none(self):
-        assert get_org_default_language(None) == "en"
+    def test_returns_zh_when_org_config_is_none(self):
+        assert get_org_default_language(None) == "zh"
 
     @pytest.mark.asyncio
-    async def test_returns_en_when_config_is_empty(self, db, org):
+    async def test_returns_zh_when_config_is_empty(self, db, org):
         row = await _make_org_config(db, org, {})
-        assert get_org_default_language(row) == "en"
+        assert get_org_default_language(row) == "zh"
 
 
 class TestApiUpdateOrgDefaultLanguageRouterWrapper:

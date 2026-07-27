@@ -474,6 +474,9 @@ class TestUsergroupsService:
             add_users = await add_users_to_usergroup(
                 mock_request, db, admin_user, usergroup.id, f"{admin_user.id},{regular_user.id}"
             )
+            listed_usergroups = await read_usergroups_by_org_id(
+                mock_request, db, admin_user, org.id
+            )
 
         board = await _make_board(db, org, admin_user)
         with patch(
@@ -503,6 +506,7 @@ class TestUsergroupsService:
             )
 
         assert add_users == "Users added to UserGroup successfully"
+        assert listed_usergroups[0].member_count == 2
         assert add_resources == "Resources added to UserGroup successfully"
         assert {user.id for user in users} == {admin_user.id, regular_user.id}
         assert resources == [board.board_uuid]

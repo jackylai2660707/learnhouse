@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAPIUrl } from '@services/config/config'
+
+const API_URL = `${(
+  process.env.NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL
+  || process.env.LEARNHOUSE_BACKEND_URL
+  || 'http://localhost:1338'
+).replace(/\/+$/, '')}/api/v1/`
 
 /**
  * Proxy route for SCORM content
@@ -18,7 +23,7 @@ export async function GET(
     const queryString = request.nextUrl.search
 
     // Build the backend URL (include query string if present)
-    const backendUrl = `${getAPIUrl()}scorm/${pathString}${queryString}`
+    const backendUrl = `${API_URL}scorm/${pathString}${queryString}`
 
     const response = await fetch(backendUrl, {
       method: 'GET',

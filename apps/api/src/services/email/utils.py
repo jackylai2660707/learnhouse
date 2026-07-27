@@ -1,6 +1,8 @@
 import logging
 import os
 import smtplib
+import ssl
+from dataclasses import dataclass
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
@@ -12,6 +14,37 @@ import resend
 from config.config import get_learnhouse_config
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class EmailConfigurationStatus:
+    configured: bool
+    code: str
+
+
+def email_configuration_status(mailing) -> EmailConfigurationStatus:
+    sender = str(getattr(mailing, "system_email_address", "") or "").strip()
+    if not sender or "@" not in sender:
+        return EmailConfigurationStatus(False, "email_sender_invalid")
+
+    if mailing.email_provider == "resend":
+        if not getattr(mailing, "resend_api_key", None):
+            return EmailConfigurationStatus(False, "email_resend_key_missing")
+        return EmailConfigurationStatus(True, "configured")
+
+    if mailing.email_provider != "smtp":
+        return EmailConfigurationStatus(False, "email_provider_invalid")
+    host = str(getattr(mailing, "smtp_host", "") or "").strip()
+    port = getattr(mailing, "smtp_port", None)
+    if not host:
+        return EmailConfigurationStatus(False, "email_smtp_host_missing")
+    if not isinstance(port, int) or not 1 <= port <= 65535:
+        return EmailConfigurationStatus(False, "email_smtp_port_invalid")
+    username = str(getattr(mailing, "smtp_username", "") or "").strip()
+    password = str(getattr(mailing, "smtp_password", "") or "").strip()
+    if bool(username) != bool(password):
+        return EmailConfigurationStatus(False, "email_smtp_credentials_incomplete")
+    return EmailConfigurationStatus(True, "configured")
 
 
 def _is_allowed_base_url(url: str) -> bool:
@@ -195,8 +228,41 @@ def send_email(to: EmailStr, subject: str, body: str):
     # provider 4xx.
     to_addr = str(to).strip()
     if not to_addr or "@" not in to_addr:
-        logger.error("Refusing to send email: invalid recipient %r", to)
-        raise HTTPException(status_code=400, detail="Invalid recipient email address")
+        logger.warning(
+            "email.send.rejected",
+            extra={
+                "integration": "email",
+                "operation": "send",
+                "error_code": "email_recipient_invalid",
+            },
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "email_recipient_invalid",
+                "message": "收件電郵地址格式無效。",
+                "retryable": False,
+            },
+        )
+
+    config_status = email_configuration_status(mailing)
+    if not config_status.configured:
+        logger.warning(
+            "email.send.unavailable",
+            extra={
+                "integration": "email",
+                "operation": "send",
+                "error_code": config_status.code,
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": config_status.code,
+                "message": "系統電郵服務尚未完成設定，請通知管理員。",
+                "retryable": True,
+            },
+        )
 
     if mailing.email_provider == "smtp":
         return _send_email_smtp(sender, to_addr, subject, body, mailing)
@@ -214,9 +280,23 @@ def _send_email_resend(sender: str, to: str, subject: str, body: str, mailing):
             "subject": subject,
             "html": body,
         })
-    except Exception as e:
-        logger.error("Resend email failed to %s: %s", to, e, exc_info=True)
-        raise HTTPException(status_code=503, detail="Email service temporarily unavailable")
+    except Exception as exc:
+        logger.warning(
+            "email.send.failed",
+            extra={
+                "integration": "email",
+                "operation": "send_resend",
+                "error_code": type(exc).__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "email_provider_unavailable",
+                "message": "電郵服務暫時不可用，請稍後再試。",
+                "retryable": True,
+            },
+        ) from exc
 
 
 _SMTP_TIMEOUT = 15
@@ -234,7 +314,7 @@ def _send_email_smtp(sender: str, to: str, subject: str, body: str, mailing):
     try:
         if mailing.smtp_use_tls:
             server = smtplib.SMTP(mailing.smtp_host, mailing.smtp_port, timeout=_SMTP_TIMEOUT)
-            server.starttls()
+            server.starttls(context=ssl.create_default_context())
         else:
             server = smtplib.SMTP(mailing.smtp_host, mailing.smtp_port, timeout=_SMTP_TIMEOUT)
 
@@ -243,16 +323,43 @@ def _send_email_smtp(sender: str, to: str, subject: str, body: str, mailing):
 
         server.sendmail(mailing.system_email_address, to, msg.as_string())
         return {"id": None, "to": to}
-    except smtplib.SMTPException as e:
-        logger.error("SMTP error sending to %s: %s", to, e, exc_info=True)
-        raise HTTPException(status_code=503, detail="Email service error")
-    except OSError as e:
-        logger.error("SMTP connection error to %s:%s: %s", mailing.smtp_host, mailing.smtp_port, e, exc_info=True)
-        raise HTTPException(status_code=503, detail="Email service unavailable")
+    except smtplib.SMTPException as exc:
+        logger.warning(
+            "email.send.failed",
+            extra={
+                "integration": "email",
+                "operation": "send_smtp",
+                "error_code": type(exc).__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "email_provider_unavailable",
+                "message": "電郵服務暫時不可用，請稍後再試。",
+                "retryable": True,
+            },
+        ) from exc
+    except OSError as exc:
+        logger.warning(
+            "email.send.failed",
+            extra={
+                "integration": "email",
+                "operation": "send_smtp",
+                "error_code": type(exc).__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "email_provider_unavailable",
+                "message": "電郵服務暫時不可用，請稍後再試。",
+                "retryable": True,
+            },
+        ) from exc
     finally:
         if server is not None:
             try:
                 server.quit()
             except Exception:
                 pass
-

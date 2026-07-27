@@ -44,6 +44,13 @@ class AIConfig(BaseModel):
     openai_api_key: str | None
     openai_model: str | None
     openai_image_model: str | None
+    openai_embedding_model: str | None
+    # Embeddings are configured independently of chat on purpose: a provider
+    # can serve /chat/completions perfectly while answering 404 on
+    # /embeddings, which is exactly the case here. Pointing these at a
+    # dedicated service leaves the working chat provider untouched.
+    embedding_base_url: str | None
+    embedding_api_key: str | None
 
 
 class S3ApiConfig(BaseModel):
@@ -115,6 +122,34 @@ class LearnHouseConfig(BaseModel):
     payments_config: InternalPaymentsConfig
     tinybird_config: TinybirdConfig | None
     judge0_config: Judge0Config | None
+
+
+def _resolve_ai_provider(
+    configured_provider: str | None,
+    openai_base_url: str | None,
+    openai_api_key: str | None,
+) -> Literal["gemini", "openai_compatible"]:
+    provider = (configured_provider or "").strip().lower()
+    if provider in ("gemini", "openai_compatible"):
+        return provider  # type: ignore[return-value]
+
+    if openai_base_url or openai_api_key:
+        return "openai_compatible"
+
+    return "gemini"
+
+
+def _read_secret_file(path: str | None, label: str) -> str | None:
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as secret_file:
+            secret = secret_file.read(4097)
+    except OSError as exc:
+        raise ValueError(f"Unable to read configured {label} secret file") from exc
+    if len(secret) > 4096:
+        raise ValueError(f"Configured {label} secret file is too large")
+    return secret.strip() or None
 
 
 def get_learnhouse_config() -> LearnHouseConfig:
@@ -368,17 +403,13 @@ def get_learnhouse_config() -> LearnHouseConfig:
     env_openai_api_key = os.environ.get("LEARNHOUSE_OPENAI_API_KEY")
     env_openai_model = os.environ.get("LEARNHOUSE_OPENAI_MODEL")
     env_openai_image_model = os.environ.get("LEARNHOUSE_OPENAI_IMAGE_MODEL")
+    env_openai_embedding_model = os.environ.get("LEARNHOUSE_OPENAI_EMBEDDING_MODEL")
+    env_embedding_base_url = os.environ.get("LEARNHOUSE_EMBEDDING_BASE_URL")
+    env_embedding_api_key = os.environ.get("LEARNHOUSE_EMBEDDING_API_KEY")
 
     gemini_api_key = env_gemini_api_key or yaml_config.get("ai_config", {}).get(
         "gemini_api_key"
     )
-    ai_provider = (
-        env_ai_provider
-        or yaml_config.get("ai_config", {}).get("provider")
-        or ("openai_compatible" if env_openai_base_url or env_openai_api_key else "gemini")
-    )
-    if ai_provider not in ("gemini", "openai_compatible"):
-        ai_provider = "gemini"
     openai_base_url = (
         env_openai_base_url
         or yaml_config.get("ai_config", {}).get("openai_base_url")
@@ -386,6 +417,11 @@ def get_learnhouse_config() -> LearnHouseConfig:
     openai_api_key = (
         env_openai_api_key
         or yaml_config.get("ai_config", {}).get("openai_api_key")
+    )
+    ai_provider = _resolve_ai_provider(
+        env_ai_provider or yaml_config.get("ai_config", {}).get("provider"),
+        openai_base_url,
+        openai_api_key,
     )
     openai_model = (
         env_openai_model
@@ -396,7 +432,20 @@ def get_learnhouse_config() -> LearnHouseConfig:
         or yaml_config.get("ai_config", {}).get("openai_image_model")
         or "gpt-image-2"
     )
-    
+    openai_embedding_model = (
+        env_openai_embedding_model
+        or yaml_config.get("ai_config", {}).get("openai_embedding_model")
+        or "text-embedding-3-small"
+    )
+    embedding_base_url = (
+        env_embedding_base_url
+        or yaml_config.get("ai_config", {}).get("embedding_base_url")
+    )
+    embedding_api_key = (
+        env_embedding_api_key
+        or yaml_config.get("ai_config", {}).get("embedding_api_key")
+    )
+
     # Parse is_ai_enabled from env or yaml
     if env_is_ai_enabled_str:
         is_ai_enabled = env_is_ai_enabled_str.lower() in ("true", "1", "yes")
@@ -417,6 +466,7 @@ def get_learnhouse_config() -> LearnHouseConfig:
     env_smtp_port = os.environ.get("LEARNHOUSE_SMTP_PORT")
     env_smtp_username = os.environ.get("LEARNHOUSE_SMTP_USERNAME")
     env_smtp_password = os.environ.get("LEARNHOUSE_SMTP_PASSWORD")
+    env_smtp_password_file = os.environ.get("LEARNHOUSE_SMTP_PASSWORD_FILE")
     env_smtp_use_tls = os.environ.get("LEARNHOUSE_SMTP_USE_TLS")
 
     email_provider = env_email_provider or yaml_config.get("mailing_config", {}).get(
@@ -431,7 +481,11 @@ def get_learnhouse_config() -> LearnHouseConfig:
     smtp_host = env_smtp_host or yaml_config.get("mailing_config", {}).get("smtp_host")
     smtp_port = int(env_smtp_port) if env_smtp_port else yaml_config.get("mailing_config", {}).get("smtp_port", 587)
     smtp_username = env_smtp_username or yaml_config.get("mailing_config", {}).get("smtp_username")
-    smtp_password = env_smtp_password or yaml_config.get("mailing_config", {}).get("smtp_password")
+    smtp_password = (
+        env_smtp_password
+        or _read_secret_file(env_smtp_password_file, "SMTP password")
+        or yaml_config.get("mailing_config", {}).get("smtp_password")
+    )
     smtp_use_tls = (
         env_smtp_use_tls.lower() in ("true", "1", "yes") if env_smtp_use_tls
         else yaml_config.get("mailing_config", {}).get("smtp_use_tls", True)
@@ -580,6 +634,9 @@ def get_learnhouse_config() -> LearnHouseConfig:
         openai_api_key=openai_api_key,
         openai_model=openai_model,
         openai_image_model=openai_image_model,
+        openai_embedding_model=openai_embedding_model,
+        embedding_base_url=embedding_base_url.rstrip("/") if embedding_base_url else None,
+        embedding_api_key=embedding_api_key,
     )
 
     # Surface missing internal-service keys at boot rather than at first

@@ -30,4 +30,5 @@ class UserGroupRead(UserGroupBase):
     usergroup_uuid: str
     creation_date: str
     update_date: str
+    member_count: int = 0
     pass

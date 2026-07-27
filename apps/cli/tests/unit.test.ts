@@ -7,7 +7,8 @@ import { generateEnvFile } from '../src/templates/env.js'
 import { generateNginxConf } from '../src/templates/nginx.js'
 import { generateCaddyfile } from '../src/templates/caddyfile.js'
 import { writeConfig, readConfig, findInstallDir, listInstallations } from '../src/services/config-store.js'
-import { validateEmail } from '../src/utils/validators.js'
+import { finalizeBootstrapEnv } from '../src/services/bootstrap-env.js'
+import { validateEmail, validatePassword } from '../src/utils/validators.js'
 import type { SetupConfig } from '../src/types.js'
 
 const baseConfig: SetupConfig = {
@@ -85,12 +86,28 @@ describe('generateEnvFile', () => {
   it('includes required env vars', () => {
     const env = generateEnvFile(baseConfig)
     expect(env).toContain('LEARNHOUSE_DOMAIN=localhost')
+    expect(env).toContain('LEARNHOUSE_ENV=dev')
+    expect(env).toContain('LEARNHOUSE_SSL=False')
     expect(env).toContain('LEARNHOUSE_SQL_CONNECTION_STRING=')
     expect(env).toContain('LEARNHOUSE_REDIS_CONNECTION_STRING=')
     expect(env).toContain('NEXTAUTH_SECRET=')
     expect(env).toContain('LEARNHOUSE_AUTH_JWT_SECRET_KEY=')
     expect(env).toContain('LEARNHOUSE_INITIAL_ADMIN_EMAIL=admin@test.dev')
     expect(env).toContain('LEARNHOUSE_INITIAL_ADMIN_PASSWORD=password123')
+    expect(env).toContain('LEARNHOUSE_BOOTSTRAP_ADMIN=True')
+  })
+
+  it('marks HTTPS host deployments as production', () => {
+    const env = generateEnvFile({
+      ...baseConfig,
+      domain: 'learn.school.example',
+      useHttps: true,
+      httpPort: 443,
+    })
+
+    expect(env).toContain('LEARNHOUSE_ENV=production')
+    expect(env).toContain('NEXT_PUBLIC_LEARNHOUSE_ENV=production')
+    expect(env).toContain('LEARNHOUSE_SSL=True')
   })
 
   it('includes port', () => {
@@ -123,6 +140,23 @@ describe('generateEnvFile', () => {
       geminiApiKey: 'test-gemini-key',
     })
     expect(env).toContain('test-gemini-key')
+    expect(env).toContain('LEARNHOUSE_AI_PROVIDER=gemini')
+  })
+})
+
+describe('finalizeBootstrapEnv', () => {
+  it('removes the one-time password and disables bootstrap after seeding', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-bootstrap-'))
+    const envPath = path.join(dir, '.env')
+    fs.writeFileSync(envPath, generateEnvFile(baseConfig))
+
+    finalizeBootstrapEnv(envPath)
+
+    const env = fs.readFileSync(envPath, 'utf-8')
+    expect(env).not.toContain('LEARNHOUSE_INITIAL_ADMIN_PASSWORD=')
+    expect(env).toContain('LEARNHOUSE_BOOTSTRAP_ADMIN=False')
+    expect(env).toContain('LEARNHOUSE_AUTH_JWT_SECRET_KEY=')
+    expect(fs.statSync(envPath).mode & 0o777).toBe(0o600)
   })
 })
 
@@ -473,5 +507,12 @@ describe('validateEmail — reserved TLDs', () => {
 
   it('is case-insensitive on the TLD', () => {
     expect(validateEmail('admin@SCHOOL.LOCAL')).toMatch(/RFC 6761|reserved/i)
+  })
+})
+
+describe('validatePassword', () => {
+  it('requires at least 12 characters for administrator bootstrap', () => {
+    expect(validatePassword('short-pass')).toMatch(/12 characters/i)
+    expect(validatePassword('strong-pass-123')).toBeUndefined()
   })
 })

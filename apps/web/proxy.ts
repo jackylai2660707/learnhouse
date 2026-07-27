@@ -1,7 +1,12 @@
-import { getAPIUrl } from './services/config/config'
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 import { isLocalhost as isLocalhostCheck } from './services/utils/ts/hostUtils'
+
+const API_URL = `${(
+  process.env.NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL
+  || process.env.LEARNHOUSE_BACKEND_URL
+  || 'http://localhost:1338'
+).replace(/\/+$/, '')}/api/v1/`
 
 // =============================================================================
 // Tenancy
@@ -40,8 +45,7 @@ async function getInstanceInfo(): Promise<InstanceInfo> {
   }
 
   try {
-    const apiUrl = getAPIUrl()
-    const res = await fetch(`${apiUrl}instance/info`, { signal: AbortSignal.timeout(3000) })
+    const res = await fetch(`${API_URL}instance/info`, { signal: AbortSignal.timeout(3000) })
     if (res.ok) {
       const raw = await res.json()
       // Older backends only return `multi_org_enabled`; derive `tenancy`.
@@ -414,6 +418,17 @@ export default async function proxy(req: NextRequest) {
   // -------------------------------------------------------------------------
   const resolved = await resolveTenant(req, instance)
   const requestHeaders = tenantRequestHeaders(req, resolved, instance)
+
+  if (pathname === `/orgs/${resolved.slug}` || pathname.startsWith(`/orgs/${resolved.slug}/`)) {
+    const response = NextResponse.rewrite(
+      new URL(`${pathname}${search}`, req.url),
+      { request: { headers: requestHeaders } },
+    )
+    setOrgCookies(response, resolved, instance)
+    setInstanceCookies(response, instance)
+    return response
+  }
+
   const response = NextResponse.rewrite(
     new URL(`/orgs/${resolved.slug}${pathname}`, req.url),
     { request: { headers: requestHeaders } },

@@ -47,6 +47,60 @@ from src.services.analytics.analytics import track
 from src.services.analytics import events as analytics_events
 from src.services.webhooks.dispatch import dispatch_webhooks
 
+DEFAULT_USER_ROLE_ID = 4
+
+
+async def _get_pending_invite_role_id(
+    db_session: AsyncSession,
+    org_id: int,
+    email: str | None,
+) -> int:
+    if not email:
+        return DEFAULT_USER_ROLE_ID
+
+    try:
+        statement = select(Organization).where(Organization.id == org_id)
+        org = (await db_session.execute(statement)).scalars().first()
+        if not org:
+            return DEFAULT_USER_ROLE_ID
+
+        redis_conn_string = get_learnhouse_config().redis_config.redis_connection_string
+        if not redis_conn_string:
+            return DEFAULT_USER_ROLE_ID
+
+        r = redis.Redis.from_url(redis_conn_string)
+        invited_data = r.get(f"invited_user:{email}:org:{org.org_uuid}")
+        if not invited_data:
+            return DEFAULT_USER_ROLE_ID
+
+        invite_record = json.loads(invited_data)
+        role_uuid = invite_record.get("role_uuid")
+        if not role_uuid:
+            return DEFAULT_USER_ROLE_ID
+
+        role_statement = select(Role).where(Role.role_uuid == role_uuid)
+        role = (await db_session.execute(role_statement)).scalars().first()
+        if not role or role.id is None:
+            return DEFAULT_USER_ROLE_ID
+
+        if role.org_id is not None and role.org_id != org_id:
+            logging.getLogger(__name__).warning(
+                "Ignoring invite role %s for email=%s because it does not belong to org_id=%s",
+                role_uuid,
+                email,
+                org_id,
+            )
+            return DEFAULT_USER_ROLE_ID
+
+        return role.id
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to resolve pending invite role for email=%s org_id=%s",
+            email,
+            org_id,
+        )
+        return DEFAULT_USER_ROLE_ID
+
 
 async def create_user(
     request: Request,
@@ -57,6 +111,7 @@ async def create_user(
     is_oauth: bool = False,
     signup_provider: str = "email",
 ):
+    deployment_mode = get_deployment_mode()
     # Validate password complexity (skip for OAuth users who have empty passwords)
     if user_object.password and not is_oauth:
         validation_result = validate_password_complexity(user_object.password)
@@ -81,7 +136,7 @@ async def create_user(
     user.password = security_hash_password(user_object.password) if user_object.password else ""
 
     # OAuth users and OSS mode get auto-verified email
-    if is_oauth or get_deployment_mode() != 'saas':
+    if is_oauth or deployment_mode != 'saas':
         user.email_verified = True
         user.email_verified_at = datetime.now(timezone.utc).isoformat()
         user.signup_method = signup_provider if is_oauth else "email"
@@ -135,11 +190,13 @@ async def create_user(
     await db_session.commit()
     await db_session.refresh(user)
 
+    role_id = await _get_pending_invite_role_id(db_session, org_id, user_object.email)
+
     # Link user and organization
     user_organization = UserOrganization(
         user_id=user.id if user.id else 0,
         org_id=org_id,
-        role_id=4,
+        role_id=role_id,
         creation_date=str(datetime.now()),
         update_date=str(datetime.now()),
     )
@@ -174,16 +231,25 @@ async def create_user(
         },
     )
 
-    # Send verification email for non-OAuth users, account creation email for OAuth users
+    # Email is optional for self-hosted school pilots. OSS accounts are already
+    # verified above, so attempting a verification email after the database
+    # commit would turn a successful signup into a misleading 5xx response.
+    # SaaS still requires verification and therefore surfaces delivery errors.
     if is_oauth:
         org_config_stmt = select(OrganizationConfig).where(OrganizationConfig.org_id == org_id)
         org_config = (await db_session.execute(org_config_stmt)).scalars().first()
-        send_account_creation_email(
-            user=user_read,
-            email=user_read.email,
-            lang=get_org_default_language(org_config),
-        )
-    else:
+        try:
+            send_account_creation_email(
+                user=user_read,
+                email=user_read.email,
+                lang=get_org_default_language(org_config),
+            )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Optional account creation email unavailable for user_id=%s",
+                user.id,
+            )
+    elif deployment_mode == "saas":
         # Import here to avoid circular imports
         from src.services.users.email_verification import send_verification_email
         await send_verification_email(request, db_session, user, org_id)
@@ -268,6 +334,7 @@ async def create_user_without_org(
     is_oauth: bool = False,
     signup_provider: str = "email",
 ):
+    deployment_mode = get_deployment_mode()
     # Validate password complexity (skip for OAuth users who have empty passwords)
     if user_object.password and not is_oauth:
         validation_result = validate_password_complexity(user_object.password)
@@ -292,7 +359,7 @@ async def create_user_without_org(
     user.password = security_hash_password(user_object.password) if user_object.password else ""
 
     # OAuth users and OSS mode get auto-verified email
-    if is_oauth or get_deployment_mode() != 'saas':
+    if is_oauth or deployment_mode != 'saas':
         user.email_verified = True
         user.email_verified_at = datetime.now(timezone.utc).isoformat()
         user.signup_method = signup_provider if is_oauth else "email"
@@ -334,14 +401,20 @@ async def create_user_without_org(
 
     user_read = UserRead.model_validate(user)
 
-    # OAuth users get welcome email (already verified)
-    # Non-OAuth SaaS users get verification email (no org needed)
-    if is_oauth or get_deployment_mode() != 'saas':
-        send_account_creation_email(
-            user=user_read,
-            email=user_read.email,
-        )
-    else:
+    # Welcome mail is best-effort; verification mail remains mandatory only
+    # where the account is intentionally left unverified (SaaS).
+    if is_oauth:
+        try:
+            send_account_creation_email(
+                user=user_read,
+                email=user_read.email,
+            )
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Optional account creation email unavailable for user_id=%s",
+                user.id,
+            )
+    elif deployment_mode == "saas":
         from src.services.users.email_verification import send_verification_email
         await send_verification_email(request, db_session, user, org_id=None)
 

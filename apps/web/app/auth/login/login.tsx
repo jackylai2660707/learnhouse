@@ -168,7 +168,10 @@ const LoginClient = (props: LoginClientProps) => {
           const errorData = JSON.parse(res.error);
           if (errorData.code) {
             setErrorType(errorData.code);
-            setError(errorData.message || t('auth.wrong_email_password'));
+            // Provider/backend messages may be English. Keep authentication
+            // errors predictable and localized; code-specific copy is
+            // rendered below for verification, lockout, and rate limits.
+            setError(t('auth.wrong_email_password'));
             if (errorData.code === 'EMAIL_NOT_VERIFIED') {
               setUnverifiedEmail(errorData.email || values.email);
             }

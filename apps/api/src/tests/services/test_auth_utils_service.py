@@ -148,6 +148,7 @@ class TestAuthUtilsService:
             update_date=str(datetime.now(timezone.utc)),
         )
         db_session = AsyncMock()
+        db_session.add = Mock()
         _result = MagicMock()
         _result.scalars.return_value.first.return_value = user
         db_session.execute.return_value = _result
@@ -158,7 +159,10 @@ class TestAuthUtilsService:
         ), patch(
             "src.services.auth.utils.get_client_ip",
             return_value="10.0.0.7",
-        ), patch("src.services.auth.utils.update_login_info") as mock_update_login:
+        ), patch(
+            "src.services.auth.utils.update_login_info",
+            new_callable=AsyncMock,
+        ) as mock_update_login:
             result = await signWithGoogle(
                 request=request,
                 access_token="access-token",
@@ -174,7 +178,7 @@ class TestAuthUtilsService:
         db_session.add.assert_called_once_with(user)
         db_session.commit.assert_awaited_once()
         db_session.refresh.assert_awaited_once_with(user)
-        mock_update_login.assert_called_once_with(user, "10.0.0.7", db_session)
+        mock_update_login.assert_awaited_once_with(user, "10.0.0.7", db_session)
 
     @pytest.mark.asyncio
     async def test_sign_with_google_username_fallback_to_user(self):

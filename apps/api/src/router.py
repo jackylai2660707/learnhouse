@@ -41,6 +41,11 @@ from src.security.api_token_utils import (
     require_non_api_token_user,
 )
 from src.security.features_utils.plan_check import require_plan, require_plan_for_boards, require_plan_for_certifications, require_plan_for_community, require_plan_for_usergroups, require_plan_for_playgrounds
+from src.security.features_utils.dependencies import (
+    require_collections_feature,
+    require_communities_feature,
+    require_podcasts_feature,
+)
 
 
 v1_router = APIRouter(prefix="/api/v1")
@@ -186,28 +191,39 @@ v1_router.include_router(
 v1_router.include_router(chapters.router, prefix="/chapters", tags=["chapters"])
 v1_router.include_router(activities.router, prefix="/activities", tags=["activities"])
 v1_router.include_router(
-    collections.router, prefix="/collections", tags=["collections"]
+    collections.router,
+    prefix="/collections",
+    tags=["collections"],
+    dependencies=[Depends(require_collections_feature)],
 )
 v1_router.include_router(
     communities_router_module.router,
     prefix="/communities",
     tags=["communities"],
-    dependencies=[Depends(require_plan_for_community("standard", "Communities"))]
+    dependencies=[
+        Depends(require_plan_for_community("standard", "Communities")),
+        Depends(require_communities_feature),
+    ],
 )
 v1_router.include_router(
     discussions_router_module.router,
     tags=["discussions"],
-    dependencies=[Depends(require_plan_for_community("standard", "Communities"))]
+    dependencies=[
+        Depends(require_plan_for_community("standard", "Communities")),
+        Depends(require_communities_feature),
+    ],
 )
 v1_router.include_router(
     podcasts_router_module.router,
     prefix="/podcasts",
-    tags=["podcasts"]
+    tags=["podcasts"],
+    dependencies=[Depends(require_podcasts_feature)],
 )
 v1_router.include_router(
     episodes_router_module.router,
     prefix="/podcasts",
-    tags=["podcasts", "episodes"]
+    tags=["podcasts", "episodes"],
+    dependencies=[Depends(require_podcasts_feature)],
 )
 v1_router.include_router(
     certifications.router,

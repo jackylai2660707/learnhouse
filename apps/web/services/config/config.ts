@@ -22,33 +22,10 @@ function loadRuntimeConfig(): Record<string, string> {
   runtimeConfig = {};
 
   if (typeof window === 'undefined') {
-    // Server-side: try to read from runtime-config.json
-    // Try multiple possible paths for standalone mode
-    try {
-      const fs = require('fs');
-      const path = require('path');
-      
-      // In standalone mode, runtime-config.json is in the same directory as server.js
-      // Try common possible locations relative to the current working directory and module
-      const possiblePaths = [
-        path.join(process.cwd(), 'runtime-config.json'),
-        path.join(__dirname || process.cwd(), 'runtime-config.json'),
-        path.join(__dirname || process.cwd(), '..', 'runtime-config.json'),
-      ];
-      
-      for (const configPath of possiblePaths) {
-        try {
-          if (fs.existsSync(configPath)) {
-            runtimeConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-            break;
-          }
-        } catch {
-          // Continue to next path
-        }
-      }
-    } catch {
-      // fs/path not available (client-side bundle), skip
-    }
+    // Server-side config comes from process.env. The standalone server wrapper
+    // writes runtime-config.js for the browser and keeps process.env populated
+    // for server components/routes, so server bundles should not trace
+    // runtime-config.json via fs/path during production builds.
     serverConfigLoaded = true;
   }
 
@@ -59,7 +36,7 @@ function loadRuntimeConfig(): Record<string, string> {
 export const getConfig = (key: string, defaultValue: string = ''): string => {
   const config = loadRuntimeConfig();
   
-  // 1. Check runtime config (from runtime-config.json or the generated runtime-config.js)
+  // 1. Check client runtime config (from generated runtime-config.js)
   if (config && config[key]) {
     return config[key];
   }
@@ -393,7 +370,3 @@ export const getDefaultOrg = () => {
   // 3. Default
   return 'default'
 }
-
-
-
-

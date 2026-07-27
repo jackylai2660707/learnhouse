@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import { getConfig } from '@services/config/config'
 import {
   ACCESS_TOKEN_COOKIE,
   REFRESH_TOKEN_COOKIE,
@@ -10,7 +9,11 @@ import {
   getCookieOptions,
 } from '@services/auth/cookies'
 
-const BACKEND_URL = (getConfig('NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL') || 'http://localhost:1338').replace(/\/+$/, '')
+const BACKEND_URL = (
+  process.env.NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL
+  || process.env.LEARNHOUSE_BACKEND_URL
+  || 'http://localhost:1338'
+).replace(/\/+$/, '')
 
 // Paths that return tokens in response body (relative to /api/v1/auth/)
 const TOKEN_RESPONSE_PATHS = ['login', 'refresh', 'oauth', 'signup']
@@ -64,6 +67,13 @@ async function proxyRequest(
     headers['Content-Type'] = contentType
   }
 
+  // Preserve browser origin evidence so the backend CSRF middleware can
+  // validate same-origin state-changing auth requests through this proxy.
+  for (const headerName of ['origin', 'referer', 'x-forwarded-host', 'x-forwarded-proto']) {
+    const value = request.headers.get(headerName)
+    if (value) headers[headerName] = value
+  }
+
   // Forward authorization header if present
   const authHeader = request.headers.get('authorization')
   if (authHeader) {
@@ -105,6 +115,10 @@ async function proxyRequest(
       if (refreshToken?.value) {
         logoutHeaders['Cookie'] = `${REFRESH_TOKEN_COOKIE}=${refreshToken.value}`
       }
+      const origin = request.headers.get('origin')
+      const referer = request.headers.get('referer')
+      if (origin) logoutHeaders['Origin'] = origin
+      if (referer) logoutHeaders['Referer'] = referer
       await fetch(`${BACKEND_URL}/api/v1/auth/logout`, {
         method: 'POST',
         headers: logoutHeaders,

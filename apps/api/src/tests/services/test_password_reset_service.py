@@ -13,6 +13,7 @@ from sqlmodel import select
 from src.db.users import AnonymousUser, User
 from src.security.security import security_hash_password, security_verify_password
 from src.services.users.password_reset import (
+    GENERIC_RESET_MESSAGE,
     _get_redis_connection,
     change_password_with_reset_code,
     change_password_with_reset_code_platform,
@@ -122,7 +123,7 @@ class TestPasswordResetService:
                 user.email,
             )
 
-        assert result.startswith("If an account")
+        assert result == GENERIC_RESET_MESSAGE
         fake_redis.set.assert_called_once()
         key = fake_redis.set.call_args.args[0]
         assert key == f"pwd_reset:user:{user.user_uuid}:org:{org.org_uuid}:code:RESET123"
@@ -139,7 +140,7 @@ class TestPasswordResetService:
             AnonymousUser(),
             "missing@test.com",
         )
-        assert missing_platform.startswith("If an account")
+        assert missing_platform == GENERIC_RESET_MESSAGE
 
         with patch(
             "src.services.users.password_reset.generate_secure_reset_code",
@@ -161,7 +162,7 @@ class TestPasswordResetService:
                 user.email,
             )
 
-        assert platform_result.startswith("If an account")
+        assert platform_result == GENERIC_RESET_MESSAGE
         mock_platform_send.assert_called_once()
         platform_key = fake_redis.set.call_args_list[-1].args[0]
         assert platform_key == f"pwd_reset:user:{user.user_uuid}:platform:code:RESET456"
@@ -203,7 +204,7 @@ class TestPasswordResetService:
                 org.id,
                 "missing@test.com",
             )
-        assert missing.startswith("If an account")
+        assert missing == GENERIC_RESET_MESSAGE
 
         with patch(
             "src.services.users.password_reset.get_learnhouse_config",
@@ -525,7 +526,7 @@ class TestPasswordResetService:
                 AnonymousUser(),
                 user.email,
             )
-        assert result.startswith("If an account")
+        assert result == GENERIC_RESET_MESSAGE
         fake_redis.set.assert_called_once()
 
         missing_platform = await send_reset_password_code_platform(
@@ -534,7 +535,7 @@ class TestPasswordResetService:
             AnonymousUser(),
             "missing@test.com",
         )
-        assert missing_platform.startswith("If an account")
+        assert missing_platform == GENERIC_RESET_MESSAGE
 
         with patch(
             "src.services.users.password_reset.validate_password_complexity",

@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getPodcastMeta } from '@services/podcasts/podcasts'
-import { getOrganizationContextInfo } from '@services/organizations/orgs'
-import { getUriWithOrg } from '@services/config/config'
-import { getPodcastThumbnailMediaDirectory, getEpisodeAudioMediaDirectory, getEpisodeThumbnailMediaDirectory } from '@services/media/media'
+
+const BACKEND_URL = (
+  process.env.NEXT_PUBLIC_LEARNHOUSE_BACKEND_URL
+  || process.env.LEARNHOUSE_BACKEND_URL
+  || 'http://localhost:1338'
+).replace(/\/+$/, '')
+const MEDIA_URL = (
+  process.env.NEXT_PUBLIC_LEARNHOUSE_MEDIA_URL
+  || BACKEND_URL
+).replace(/\/+$/, '')
 
 export async function GET(
   request: NextRequest,
@@ -16,15 +22,15 @@ export async function GET(
   }
 
   try {
-    const org = await getOrganizationContextInfo(orgSlug, null)
-    const podcastMeta = await getPodcastMeta(`podcast_${podcastuuid}`, null)
+    const org = await fetchBackendJson(`/api/v1/orgs/slug/${encodeURIComponent(orgSlug)}`)
+    const podcastMeta = await fetchBackendJson(`/api/v1/podcasts/${encodeURIComponent(`podcast_${podcastuuid}`)}/meta`)
 
     if (!podcastMeta?.podcast) {
       return NextResponse.json({ error: 'Podcast not found' }, { status: 404 })
     }
 
     const { podcast, episodes } = podcastMeta
-    const baseUrl = getUriWithOrg(orgSlug, '/')
+    const baseUrl = getRequestOrigin(request)
     const podcastUrl = `${baseUrl}podcast/${podcastuuid}`
 
     const imageUrl = podcast.thumbnail_image
@@ -102,6 +108,18 @@ ${episodeItems}
   }
 }
 
+async function fetchBackendJson(path: string) {
+  const response = await fetch(`${BACKEND_URL}${path}`, {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+  })
+  if (!response.ok) {
+    throw new Error(`Backend request failed: ${response.status}`)
+  }
+  return response.json()
+}
+
 function escapeXml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
@@ -109,6 +127,39 @@ function escapeXml(str: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;')
+}
+
+function getRequestOrigin(request: NextRequest): string {
+  const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim()
+  const protocol = forwardedProto || request.nextUrl.protocol.replace(/:$/, '') || 'https'
+  const host = request.headers.get('x-forwarded-host') || request.headers.get('host') || request.nextUrl.host
+  return `${protocol}://${host}/`
+}
+
+function getPodcastThumbnailMediaDirectory(
+  orgUUID: string,
+  podcastUUID: string,
+  fileId: string
+) {
+  return `${MEDIA_URL}/content/orgs/${orgUUID}/podcasts/${podcastUUID}/thumbnails/${fileId}`
+}
+
+function getEpisodeThumbnailMediaDirectory(
+  orgUUID: string,
+  podcastUUID: string,
+  episodeUUID: string,
+  fileId: string
+) {
+  return `${MEDIA_URL}/content/orgs/${orgUUID}/podcasts/${podcastUUID}/episodes/${episodeUUID}/thumbnails/${fileId}`
+}
+
+function getEpisodeAudioMediaDirectory(
+  orgUUID: string,
+  podcastUUID: string,
+  episodeUUID: string,
+  fileId: string
+) {
+  return `${MEDIA_URL}/content/orgs/${orgUUID}/podcasts/${podcastUUID}/episodes/${episodeUUID}/audio/${fileId}`
 }
 
 function formatDuration(seconds: number): string {

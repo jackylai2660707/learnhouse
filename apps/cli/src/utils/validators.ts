@@ -18,9 +18,9 @@ export function validateEmail(value: string): string | undefined {
   return undefined
 }
 
-export function validatePassword(value: string): string | undefined {
+export function validatePassword(value: string | undefined): string | undefined {
   if (!value) return 'Password is required'
-  if (value.length < 8) return 'Password must be at least 8 characters'
+  if (value.length < 12) return 'Password must be at least 12 characters'
   return undefined
 }
 
@@ -46,7 +46,7 @@ export function validateSlug(value: string): string | undefined {
   return undefined
 }
 
-export function validateRequired(value: string): string | undefined {
+export function validateRequired(value: string | undefined): string | undefined {
   if (!value || value.trim() === '') return 'This field is required'
   return undefined
 }

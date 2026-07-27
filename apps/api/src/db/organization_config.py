@@ -176,7 +176,7 @@ class GeneralCustomization(BaseModel):
     favicon_image: str = ""
     watermark: bool = True
     font: str = ""
-    default_language: str = "en"
+    default_language: str = "zh"
 
 
 class SeoOrgConfig(BaseModel):
@@ -188,11 +188,43 @@ class SeoOrgConfig(BaseModel):
     noindex_communities: bool = False
 
 
+class HubProductConfig(BaseModel):
+    """One tile in the product hub grid shown on the student home page."""
+
+    id: str = ""
+    name: str = ""
+    description: str = ""
+    url: str = ""
+    icon: str = "boxes"
+    accent: Literal[
+        "amber", "cyan", "blue", "emerald", "rose", "violet", "slate"
+    ] = "slate"
+    badge: str = ""
+    enabled: bool = True
+    open_in_new_tab: bool = True
+
+
+class HubProductsConfig(BaseModel):
+    """
+    Sibling learning products linked from the LearnHouse student home page.
+
+    The frontend ships defaults in apps/web/lib/hub-products.ts; when `items`
+    here is non-empty it replaces those defaults for this org. Config is stored
+    as a JSON blob so adding a product needs no migration.
+    """
+
+    enabled: bool = True
+    title: str = ""
+    subtitle: str = ""
+    items: list[HubProductConfig] = Field(default_factory=list)
+
+
 class CustomizationConfig(BaseModel):
     general: GeneralCustomization = GeneralCustomization()
     auth_branding: AuthBrandingConfig = AuthBrandingConfig()
     seo: SeoOrgConfig = SeoOrgConfig()
     landing: dict = Field(default_factory=dict)
+    hub_products: HubProductsConfig = HubProductsConfig()
 
 
 # ============================================================================

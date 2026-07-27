@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from sqlmodel import select
 
 from src.db.roles import Role, RoleTypeEnum
 from src.db.user_organizations import UserOrganization
@@ -13,7 +14,9 @@ from src.db.usergroup_user import UserGroupUser
 from src.db.usergroups import UserGroup
 from src.db.users import User
 from src.services.orgs.users import (
+    bulk_create_organization_users_from_csv,
     export_organization_users_csv,
+    get_bulk_user_import_template_csv,
     get_organization_users,
     get_list_of_invited_users,
     invite_batch_users,
@@ -22,6 +25,15 @@ from src.services.orgs.users import (
     remove_user_from_org,
     update_user_role,
 )
+
+
+class _CsvUpload:
+    def __init__(self, text: str, filename: str = "users.csv"):
+        self.filename = filename
+        self._content = text.encode("utf-8-sig")
+
+    async def read(self) -> bytes:
+        return self._content
 
 
 async def _make_role(db, org, **overrides):
@@ -185,6 +197,70 @@ class TestOrgUsersService:
         assert result["items"][0].user.username == "ungrouped"
 
     @pytest.mark.asyncio
+    async def test_get_organization_users_dedupes_duplicate_usergroup_memberships(
+        self, mock_request, db, org, admin_user
+    ):
+        member_role = await _make_role(db, org, id=13, name="Member", role_uuid="role_member_dedupe")
+        user = await _make_user(
+            db,
+            id=23,
+            username="duplicate_member",
+            first_name="Duplicate",
+            last_name="Member",
+            email="duplicate-member@test.com",
+            user_uuid="user_duplicate_member",
+            details={"school": "pilot"},
+            profile={"level": "primary"},
+        )
+        await _link_user(db, user.id, org.id, member_role.id)
+        usergroup = await _make_usergroup(db, org, id=32, name="Duplicate Group")
+        for _ in range(2):
+            db.add(
+                UserGroupUser(
+                    usergroup_id=usergroup.id,
+                    user_id=user.id,
+                    org_id=org.id,
+                    creation_date=str(datetime.now()),
+                    update_date=str(datetime.now()),
+                )
+            )
+        await db.commit()
+
+        with patch(
+            "src.services.orgs.users.is_org_member", return_value=True
+        ), patch(
+            "src.security.superadmin.is_user_superadmin", return_value=False
+        ), patch(
+            "src.security.org_auth.is_org_admin", return_value=True
+        ):
+            result = await get_organization_users(
+                mock_request,
+                org.id,
+                db,
+                admin_user,
+                usergroup_id=usergroup.id,
+                usergroup_filter="in_group",
+                role_id=member_role.id,
+            )
+            csv_response = await export_organization_users_csv(
+                mock_request,
+                org.id,
+                db,
+                admin_user,
+                usergroup_id=usergroup.id,
+                usergroup_filter="in_group",
+                role_id=member_role.id,
+            )
+
+        assert result["total"] == 1
+        assert result["in_group_total"] == 1
+        assert len(result["items"]) == 1
+        assert result["items"][0].user.username == "duplicate_member"
+        assert [group.name for group in result["items"][0].usergroups] == ["Duplicate Group"]
+        csv_text = await _streaming_response_text(csv_response)
+        assert csv_text.count("duplicate-member@test.com") == 1
+
+    @pytest.mark.asyncio
     async def test_get_organization_users_and_export_guard_paths(
         self, mock_request, db, org, admin_user, anonymous_user
     ):
@@ -256,6 +332,15 @@ class TestOrgUsersService:
                 update_date=str(datetime.now()),
             )
         )
+        db.add(
+            UserGroupUser(
+                usergroup_id=usergroup.id,
+                user_id=user.id,
+                org_id=org.id,
+                creation_date=str(datetime.now()),
+                update_date=str(datetime.now()),
+            )
+        )
         await db.commit()
 
         with patch(
@@ -279,8 +364,11 @@ class TestOrgUsersService:
             )
 
         csv_text = await _streaming_response_text(response)
-        assert "Name,Username,Email,Groups,Role,Joined,Email Verified,Signup Method,Last Login" in csv_text
-        assert 'CSV Person,csvuser,csv@test.com,Export Group,Member,"Jan 02, 2024",No,oauth,' in csv_text
+        assert csv_text.startswith("\ufeff")
+        assert "姓名,用戶名,電郵,班級/群組,角色,加入日期,電郵已驗證,註冊方式,最後登入" in csv_text
+        assert "CSV Person,csvuser,csv@test.com,Export Group,Member,2024-01-02,否,oauth," in csv_text
+        assert csv_text.count("csv@test.com") == 1
+        assert "Export Group; Export Group" not in csv_text
 
         verified_user = await _make_user(
             db,
@@ -324,7 +412,529 @@ class TestOrgUsersService:
             )
 
         verified_csv = await _streaming_response_text(verified_response)
-        assert "Verified Person,verifieduser,verified@test.com,,Member,\"Mar 04, 2024\",Yes,email," in verified_csv
+        assert "Verified Person,verifieduser,verified@test.com,,Member,2024-03-04,是,email," in verified_csv
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_template_is_school_friendly(
+        self, mock_request, db, org, admin_user
+    ):
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock):
+            response = await get_bulk_user_import_template_csv(
+                mock_request, org.id, db, admin_user
+            )
+
+        csv_text = await _streaming_response_text(response)
+        assert "電郵,用戶名,名字,姓氏,密碼,角色,班級/群組,電郵已驗證" in csv_text
+        assert "student" in csv_text
+        assert "teacher" in csv_text
+        assert "小四A班" in csv_text
+        assert "12345678" in csv_text
+        assert "SyntheticPass123!" not in csv_text
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_accepts_school_roles_and_adds_usergroups(
+        self, mock_request, db, org, admin_user, user_role
+    ):
+        teacher_role = await _make_role(
+            db,
+            org,
+            id=30,
+            name="Instructor",
+            role_uuid="role_global_instructor",
+        )
+        csv_text = "\n".join(
+            [
+                "email,username,first_name,last_name,password,role_uuid,usergroups,email_verified",
+                "new-student@test.com,newstudent,小明,陳,SyntheticPass123!,student,小四A班,true",
+                "new-teacher@test.com,newteacher,老師,王,SyntheticPass123!,teacher,小四A班;小五B班,true",
+            ]
+        )
+
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock), patch(
+            "src.services.orgs.users.check_limits_with_usage", new_callable=AsyncMock
+        ), patch(
+            "src.services.orgs.users.increase_feature_usage", new_callable=AsyncMock
+        ):
+            result = await bulk_create_organization_users_from_csv(
+                mock_request,
+                org.id,
+                _CsvUpload(csv_text),
+                db,
+                admin_user,
+            )
+
+        assert result["summary"] == {"total": 2, "created": 2, "failed": 0}
+        assert result["results"][0]["usergroups"] == ["小四A班"]
+        assert result["results"][0]["role_label"] == "學生"
+        assert result["results"][1]["usergroups"] == ["小四A班", "小五B班"]
+        assert result["results"][1]["role_label"] == "老師"
+
+        student = (
+            await db.execute(select(User).where(User.email == "new-student@test.com"))
+        ).scalars().first()
+        teacher = (
+            await db.execute(select(User).where(User.email == "new-teacher@test.com"))
+        ).scalars().first()
+        assert student is not None
+        assert teacher is not None
+
+        teacher_link = (
+            await db.execute(
+                select(UserOrganization).where(
+                    UserOrganization.user_id == teacher.id,
+                    UserOrganization.org_id == org.id,
+                )
+            )
+        ).scalars().first()
+        assert teacher_link.role_id == teacher_role.id
+
+        group_names = [
+            group.name
+            for group in (
+                await db.execute(select(UserGroup).where(UserGroup.org_id == org.id))
+            ).scalars().all()
+        ]
+        assert group_names == ["小四A班", "小五B班"]
+
+        memberships = (
+            await db.execute(
+                select(UserGroupUser).where(
+                    UserGroupUser.user_id == teacher.id,
+                    UserGroupUser.org_id == org.id,
+                )
+            )
+        ).scalars().all()
+        assert len(memberships) == 2
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_accepts_simplified_and_full_width_school_roles(
+        self, mock_request, db, org, admin_user, user_role
+    ):
+        teacher_role = await _make_role(
+            db,
+            org,
+            id=32,
+            name="Instructor",
+            role_uuid="role_global_instructor",
+        )
+        csv_text = "\n".join(
+            [
+                "email,username,first_name,last_name,password,role_uuid,usergroups,email_verified",
+                "simplified-student@test.com,simplifiedstudent,測試,學生,12345678,学生,小四A班,true",
+                "full-width-teacher@test.com,fullwidthteacher,測試,老師,12345678,Ｔｅａｃｈｅｒ,,true",
+            ]
+        )
+
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock), patch(
+            "src.services.orgs.users.check_limits_with_usage", new_callable=AsyncMock
+        ), patch(
+            "src.services.orgs.users.increase_feature_usage", new_callable=AsyncMock
+        ):
+            result = await bulk_create_organization_users_from_csv(
+                mock_request,
+                org.id,
+                _CsvUpload(csv_text),
+                db,
+                admin_user,
+            )
+
+        assert result["summary"] == {"total": 2, "created": 2, "failed": 0}
+
+        student = (
+            await db.execute(
+                select(User).where(User.email == "simplified-student@test.com")
+            )
+        ).scalars().first()
+        teacher = (
+            await db.execute(
+                select(User).where(User.email == "full-width-teacher@test.com")
+            )
+        ).scalars().first()
+        assert student is not None
+        assert teacher is not None
+
+        teacher_link = (
+            await db.execute(
+                select(UserOrganization).where(
+                    UserOrganization.user_id == teacher.id,
+                    UserOrganization.org_id == org.id,
+                )
+            )
+        ).scalars().first()
+        assert teacher_link.role_id == teacher_role.id
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_accepts_chinese_headers(
+        self, mock_request, db, org, admin_user
+    ):
+        csv_text = "\n".join(
+            [
+                "電郵,用戶名,名字,姓氏,密碼,角色,班級/群組,電郵已驗證",
+                "chinese-header@test.com,chineseheader,小明,陳,12345678,學生,小四A班,是",
+            ]
+        )
+
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock), patch(
+            "src.services.orgs.users.check_limits_with_usage", new_callable=AsyncMock
+        ), patch(
+            "src.services.orgs.users.increase_feature_usage", new_callable=AsyncMock
+        ):
+            result = await bulk_create_organization_users_from_csv(
+                mock_request,
+                org.id,
+                _CsvUpload(csv_text),
+                db,
+                admin_user,
+            )
+
+        assert result["summary"] == {"total": 1, "created": 1, "failed": 0}
+        assert result["results"][0]["usergroups"] == ["小四A班"]
+
+        user = (
+            await db.execute(select(User).where(User.email == "chinese-header@test.com"))
+        ).scalars().first()
+        assert user is not None
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_dedupes_usergroups_by_width_and_case(
+        self, mock_request, db, org, admin_user
+    ):
+        csv_text = "\n".join(
+            [
+                "email,username,first_name,last_name,password,role_uuid,usergroups,email_verified",
+                "dedupe@test.com,dedupeuser,小明,陳,SyntheticPass123!,student,小四Ａ班;小四a班;小四A班,true",
+            ]
+        )
+
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock), patch(
+            "src.services.orgs.users.check_limits_with_usage", new_callable=AsyncMock
+        ), patch(
+            "src.services.orgs.users.increase_feature_usage", new_callable=AsyncMock
+        ):
+            result = await bulk_create_organization_users_from_csv(
+                mock_request,
+                org.id,
+                _CsvUpload(csv_text),
+                db,
+                admin_user,
+            )
+
+        assert result["summary"] == {"total": 1, "created": 1, "failed": 0}
+        assert result["results"][0]["usergroups"] == ["小四A班"]
+
+        user = (
+            await db.execute(select(User).where(User.email == "dedupe@test.com"))
+        ).scalars().first()
+        assert user is not None
+
+        group_names = [
+            group.name
+            for group in (
+                await db.execute(select(UserGroup).where(UserGroup.org_id == org.id))
+            ).scalars().all()
+        ]
+        assert group_names == ["小四A班"]
+
+        memberships = (
+            await db.execute(
+                select(UserGroupUser).where(
+                    UserGroupUser.user_id == user.id,
+                    UserGroupUser.org_id == org.id,
+                )
+            )
+        ).scalars().all()
+        assert len(memberships) == 1
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_reuses_existing_usergroup_case_insensitively(
+        self, mock_request, db, org, admin_user
+    ):
+        existing_group = await _make_usergroup(
+            db,
+            org,
+            id=35,
+            name="小四A班",
+            usergroup_uuid="ug_existing_case",
+        )
+        csv_text = "\n".join(
+            [
+                "email,username,first_name,last_name,password,role_uuid,usergroups,email_verified",
+                "reuse-group@test.com,reusegroup,小明,陳,SyntheticPass123!,student,小四a班,true",
+            ]
+        )
+
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock), patch(
+            "src.services.orgs.users.check_limits_with_usage", new_callable=AsyncMock
+        ), patch(
+            "src.services.orgs.users.increase_feature_usage", new_callable=AsyncMock
+        ):
+            result = await bulk_create_organization_users_from_csv(
+                mock_request,
+                org.id,
+                _CsvUpload(csv_text),
+                db,
+                admin_user,
+            )
+
+        assert result["summary"] == {"total": 1, "created": 1, "failed": 0}
+        assert result["results"][0]["usergroups"] == ["小四A班"]
+
+        groups = (
+            await db.execute(select(UserGroup).where(UserGroup.org_id == org.id))
+        ).scalars().all()
+        assert len(groups) == 1
+        assert groups[0].id == existing_group.id
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_accepts_simple_student_initial_password(
+        self, mock_request, db, org, admin_user
+    ):
+        csv_text = "\n".join(
+            [
+                "email,username,first_name,last_name,password,role_uuid,usergroups,email_verified",
+                "simple-password@test.com,simplepassword,測試,學生,12345678,student,小四A班,true",
+            ]
+        )
+
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock), patch(
+            "src.services.orgs.users.check_limits_with_usage", new_callable=AsyncMock
+        ), patch(
+            "src.services.orgs.users.increase_feature_usage", new_callable=AsyncMock
+        ):
+            result = await bulk_create_organization_users_from_csv(
+                mock_request,
+                org.id,
+                _CsvUpload(csv_text),
+                db,
+                admin_user,
+            )
+
+        assert result["summary"] == {"total": 1, "created": 1, "failed": 0}
+
+        user = (
+            await db.execute(select(User).where(User.email == "simple-password@test.com"))
+        ).scalars().first()
+        assert user is not None
+        assert user.password != "12345678"
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_ignores_blank_spreadsheet_rows(
+        self, mock_request, db, org, admin_user
+    ):
+        csv_text = "\n".join(
+            [
+                "email,username,first_name,last_name,password,role_uuid,usergroups,email_verified",
+                ",,,,,,,",
+                "blank-row-student@test.com,blankrowstudent,測試,學生,12345678,student,小四A班,true",
+                " , , , , , , , ",
+            ]
+        )
+
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock), patch(
+            "src.services.orgs.users.check_limits_with_usage", new_callable=AsyncMock
+        ), patch(
+            "src.services.orgs.users.increase_feature_usage", new_callable=AsyncMock
+        ):
+            result = await bulk_create_organization_users_from_csv(
+                mock_request,
+                org.id,
+                _CsvUpload(csv_text),
+                db,
+                admin_user,
+            )
+
+        assert result["summary"] == {"total": 1, "created": 1, "failed": 0}
+        assert result["results"][0]["line"] == 3
+        assert result["results"][0]["email"] == "blank-row-student@test.com"
+
+        user = (
+            await db.execute(select(User).where(User.email == "blank-row-student@test.com"))
+        ).scalars().first()
+        assert user is not None
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_requires_usergroup_for_students_but_not_teachers(
+        self, mock_request, db, org, admin_user
+    ):
+        teacher_role = await _make_role(
+            db,
+            org,
+            id=31,
+            name="Instructor",
+            role_uuid="role_global_instructor",
+        )
+        csv_text = "\n".join(
+            [
+                "email,username,first_name,last_name,password,role_uuid,usergroups,email_verified",
+                "no-class-student@test.com,noclassstudent,測試,學生,12345678,student,,true",
+                "no-class-teacher@test.com,noclassteacher,測試,老師,12345678,teacher,,true",
+            ]
+        )
+
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock), patch(
+            "src.services.orgs.users.check_limits_with_usage", new_callable=AsyncMock
+        ), patch(
+            "src.services.orgs.users.increase_feature_usage", new_callable=AsyncMock
+        ):
+            result = await bulk_create_organization_users_from_csv(
+                mock_request,
+                org.id,
+                _CsvUpload(csv_text),
+                db,
+                admin_user,
+            )
+
+        assert result["summary"] == {"total": 2, "created": 1, "failed": 1}
+        assert result["results"][0]["status"] == "failed"
+        assert "學生帳號必須填寫班級/群組" in result["results"][0]["errors"]
+        assert result["results"][0]["role"] == "student"
+        assert result["results"][0]["usergroups"] == []
+        assert result["results"][1]["status"] == "created"
+        teacher = (
+            await db.execute(select(User).where(User.email == "no-class-teacher@test.com"))
+        ).scalars().first()
+        assert teacher is not None
+        teacher_link = (
+            await db.execute(
+                select(UserOrganization).where(
+                    UserOrganization.user_id == teacher.id,
+                    UserOrganization.org_id == org.id,
+                )
+            )
+        ).scalars().first()
+        assert teacher_link.role_id == teacher_role.id
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_returns_traditional_chinese_errors(
+        self, mock_request, db, org, admin_user
+    ):
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock):
+            with pytest.raises(Exception) as missing_columns_exc:
+                await bulk_create_organization_users_from_csv(
+                    mock_request,
+                    org.id,
+                    _CsvUpload("email,password\nbad-email,123\n"),
+                    db,
+                    admin_user,
+                )
+
+        assert missing_columns_exc.value.status_code == 400
+        assert "CSV 缺少必填欄位" in missing_columns_exc.value.detail
+        assert "用戶名(username)" in missing_columns_exc.value.detail
+        assert "名字(first_name)" in missing_columns_exc.value.detail
+
+        csv_text = "\n".join(
+            [
+                "email,username,first_name,last_name,password,role_uuid,email_verified",
+                "bad-email,baduser,小明,陳,123,student,true",
+            ]
+        )
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock):
+            result = await bulk_create_organization_users_from_csv(
+                mock_request,
+                org.id,
+                _CsvUpload(csv_text),
+                db,
+                admin_user,
+            )
+
+        assert result["summary"] == {"total": 1, "created": 0, "failed": 1}
+        assert "電郵格式不正確" in result["results"][0]["errors"]
+        assert any("密碼至少需要 8 個字符" in error for error in result["results"][0]["errors"])
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_rolls_back_row_when_usergroup_creation_fails(
+        self, mock_request, db, org, admin_user
+    ):
+        csv_text = "\n".join(
+            [
+                "email,username,first_name,last_name,password,role_uuid,usergroups,email_verified",
+                "rollback@test.com,rollbackuser,小明,陳,SyntheticPass123!,student,小四A班,true",
+            ]
+        )
+        original_flush = db.flush
+        flush_count = 0
+
+        async def flaky_flush(*args, **kwargs):
+            nonlocal flush_count
+            flush_count += 1
+            if flush_count == 2:
+                raise RuntimeError("boom while creating usergroup")
+            return await original_flush(*args, **kwargs)
+
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock), patch(
+            "src.services.orgs.users.check_limits_with_usage", new_callable=AsyncMock
+        ), patch(
+            "src.services.orgs.users.increase_feature_usage", new_callable=AsyncMock
+        ) as increase_usage:
+            db.flush = flaky_flush
+            try:
+                result = await bulk_create_organization_users_from_csv(
+                    mock_request,
+                    org.id,
+                    _CsvUpload(csv_text),
+                    db,
+                    admin_user,
+                )
+            finally:
+                db.flush = original_flush
+
+        assert result["summary"] == {"total": 1, "created": 0, "failed": 1}
+        assert result["results"][0]["errors"] == ["建立帳號失敗，請檢查資料後再試"]
+        increase_usage.assert_not_awaited()
+
+        user = (
+            await db.execute(select(User).where(User.email == "rollback@test.com"))
+        ).scalars().first()
+        usergroup = (
+            await db.execute(select(UserGroup).where(UserGroup.name == "小四A班"))
+        ).scalars().first()
+        assert user is None
+        assert usergroup is None
+
+    @pytest.mark.asyncio
+    async def test_bulk_user_import_still_succeeds_when_usage_tracking_fails(
+        self, mock_request, db, org, admin_user
+    ):
+        csv_text = "\n".join(
+            [
+                "email,username,first_name,last_name,password,role_uuid,usergroups,email_verified",
+                "usage-failed@test.com,usagefailed,小明,陳,SyntheticPass123!,student,小四A班,true",
+            ]
+        )
+
+        with patch("src.services.orgs.users.rbac_check", new_callable=AsyncMock), patch(
+            "src.services.orgs.users.check_limits_with_usage", new_callable=AsyncMock
+        ), patch(
+            "src.services.orgs.users.increase_feature_usage",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("usage tracking failed"),
+        ):
+            result = await bulk_create_organization_users_from_csv(
+                mock_request,
+                org.id,
+                _CsvUpload(csv_text),
+                db,
+                admin_user,
+            )
+
+        assert result["summary"] == {"total": 1, "created": 1, "failed": 0}
+        assert result["results"][0]["status"] == "created"
+        assert result["results"][0]["usergroups"] == ["小四A班"]
+
+        user = (
+            await db.execute(select(User).where(User.email == "usage-failed@test.com"))
+        ).scalars().first()
+        assert user is not None
+        membership = (
+            await db.execute(
+                select(UserGroupUser).where(
+                    UserGroupUser.user_id == user.id,
+                    UserGroupUser.org_id == org.id,
+                )
+            )
+        ).scalars().first()
+        assert membership is not None
 
     @pytest.mark.asyncio
     async def test_remove_user_and_batch_missing_org_and_missing_user(
@@ -478,7 +1088,7 @@ class TestOrgUsersService:
         ):
             with pytest.raises(Exception) as redis_missing_exc:
                 await invite_batch_users(
-                    mock_request, org.id, "a@test.com", "invite_uuid", db, admin_user
+                    mock_request, org.id, "a@test.com", "invite_uuid", None, db, admin_user
                 )
         assert redis_missing_exc.value.status_code == 500
 
@@ -494,7 +1104,7 @@ class TestOrgUsersService:
         ):
             with pytest.raises(Exception) as org_missing_exc:
                 await invite_batch_users(
-                    mock_request, 999, "a@test.com", "invite_uuid", db, admin_user
+                    mock_request, 999, "a@test.com", "invite_uuid", None, db, admin_user
                 )
         assert org_missing_exc.value.status_code == 404
 
@@ -510,7 +1120,7 @@ class TestOrgUsersService:
         ):
             with pytest.raises(Exception) as redis_conn_exc:
                 await invite_batch_users(
-                    mock_request, org.id, "a@test.com", "invite_uuid", db, admin_user
+                    mock_request, org.id, "a@test.com", "invite_uuid", None, db, admin_user
                 )
         assert redis_conn_exc.value.status_code == 500
 
@@ -540,6 +1150,7 @@ class TestOrgUsersService:
                 org.id,
                 "new@test.com,existing@test.com,failed@test.com,",
                 "invite_uuid",
+                None,
                 db,
                 admin_user,
             )
@@ -934,7 +1545,7 @@ class TestOrgUsersService:
             )
 
         missing_csv = await _streaming_response_text(missing_user_org)
-        assert "Name,Username,Email" in missing_csv
+        assert "姓名,用戶名,電郵" in missing_csv
 
     @pytest.mark.asyncio
     async def test_get_organization_users_and_export_csv(
@@ -1026,6 +1637,23 @@ class TestOrgUsersService:
         )
         await _link_user(db, second_admin.id, org.id, 1)
         role = await _make_role(db, org, id=11, name="Instructor", role_uuid="role_instructor")
+        usergroup = await _make_usergroup(
+            db,
+            org,
+            id=62,
+            name="Remove Single Group",
+            usergroup_uuid="ug_remove_single",
+        )
+        db.add(
+            UserGroupUser(
+                usergroup_id=usergroup.id,
+                user_id=second_admin.id,
+                org_id=org.id,
+                creation_date=str(datetime.now()),
+                update_date=str(datetime.now()),
+            )
+        )
+        await db.commit()
 
         with patch(
             "src.services.orgs.users.rbac_check",
@@ -1049,6 +1677,15 @@ class TestOrgUsersService:
 
         assert updated == {"detail": "User role updated"}
         assert removed == {"detail": "User removed from org"}
+        stale_membership = (
+            await db.execute(
+                select(UserGroupUser).where(
+                    UserGroupUser.user_id == second_admin.id,
+                    UserGroupUser.org_id == org.id,
+                )
+            )
+        ).scalars().first()
+        assert stale_membership is None
 
     @pytest.mark.asyncio
     async def test_remove_batch_and_last_admin_guards(
@@ -1074,6 +1711,23 @@ class TestOrgUsersService:
             user_uuid="user_admin3",
         )
         await _link_user(db, second_admin.id, org.id, 1)
+        usergroup = await _make_usergroup(
+            db,
+            org,
+            id=63,
+            name="Remove Batch Group",
+            usergroup_uuid="ug_remove_batch",
+        )
+        db.add(
+            UserGroupUser(
+                usergroup_id=usergroup.id,
+                user_id=regular_user.id,
+                org_id=org.id,
+                creation_date=str(datetime.now()),
+                update_date=str(datetime.now()),
+            )
+        )
+        await db.commit()
 
         with patch(
             "src.services.orgs.users.rbac_check",
@@ -1097,6 +1751,15 @@ class TestOrgUsersService:
                 mock_request, org.id, [regular_user.id], db, admin_user
             )
         assert result == {"detail": "1 user(s) removed from org"}
+        stale_membership = (
+            await db.execute(
+                select(UserGroupUser).where(
+                    UserGroupUser.user_id == regular_user.id,
+                    UserGroupUser.org_id == org.id,
+                )
+            )
+        ).scalars().first()
+        assert stale_membership is None
 
     @pytest.mark.asyncio
     async def test_invite_batch_users(
@@ -1131,6 +1794,7 @@ class TestOrgUsersService:
                 org.id,
                 "new@test.com,existing@test.com",
                 "invite_uuid",
+                None,
                 db,
                 admin_user,
             )

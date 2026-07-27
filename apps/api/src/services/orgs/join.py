@@ -1,10 +1,14 @@
 from datetime import datetime
+import json
 from typing import Optional, Union
+import redis
 from fastapi import HTTPException, Request
 from pydantic import BaseModel, field_validator
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
+from config.config import get_learnhouse_config
 from src.db.organizations import Organization
+from src.db.roles import Role
 from src.db.user_organizations import UserOrganization
 from src.db.users import AnonymousUser, InternalUser, PublicUser, User
 from src.security.features_utils.usage import (
@@ -14,6 +18,8 @@ from src.security.features_utils.usage import (
 from src.services.orgs.invites import get_invite_code
 from src.services.orgs.orgs import get_org_join_mechanism
 from src.services.users.usergroups import add_users_to_usergroup
+
+DEFAULT_USER_ROLE_ID = 4
 
 
 class JoinOrg(BaseModel):
@@ -25,6 +31,42 @@ class JoinOrg(BaseModel):
     @classmethod
     def coerce_user_id_to_str(cls, v: Union[str, int]) -> str:
         return str(v)
+
+
+async def _get_pending_invite_role_id(
+    db_session: AsyncSession,
+    org: Organization,
+    email: str | None,
+) -> int:
+    if not email:
+        return DEFAULT_USER_ROLE_ID
+
+    try:
+        redis_conn_string = get_learnhouse_config().redis_config.redis_connection_string
+        if not redis_conn_string:
+            return DEFAULT_USER_ROLE_ID
+
+        r = redis.Redis.from_url(redis_conn_string)
+        invited_data = r.get(f"invited_user:{email}:org:{org.org_uuid}")
+        if not invited_data:
+            return DEFAULT_USER_ROLE_ID
+
+        invite_record = json.loads(invited_data)
+        role_uuid = invite_record.get("role_uuid")
+        if not role_uuid:
+            return DEFAULT_USER_ROLE_ID
+
+        role_statement = select(Role).where(Role.role_uuid == role_uuid)
+        role = (await db_session.execute(role_statement)).scalars().first()
+        if not role or role.id is None:
+            return DEFAULT_USER_ROLE_ID
+
+        if role.org_id is not None and role.org_id != org.id:
+            return DEFAULT_USER_ROLE_ID
+
+        return role.id
+    except Exception:
+        return DEFAULT_USER_ROLE_ID
 
 
 async def join_org(
@@ -94,13 +136,15 @@ async def join_org(
                 raise HTTPException(
                     status_code=400,
                     detail="Invite code is incorrect",
-                )
+            )
+
+            role_id = await _get_pending_invite_role_id(db_session, org, user.email)
 
             # Link user and organization
             user_organization = UserOrganization(
                 user_id=user.id,
                 org_id=org.id,
-                role_id=4,
+                role_id=role_id,
                 creation_date=str(datetime.now()),
                 update_date=str(datetime.now()),
             )
@@ -133,11 +177,13 @@ async def join_org(
 
     if join_method == "open" and user and org:
         if user.id is not None and org.id is not None:
+            role_id = await _get_pending_invite_role_id(db_session, org, user.email)
+
             # Link user and organization
             user_organization = UserOrganization(
                 user_id=user.id,
                 org_id=org.id,
-                role_id=4,
+                role_id=role_id,
                 creation_date=str(datetime.now()),
                 update_date=str(datetime.now()),
             )

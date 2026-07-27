@@ -39,7 +39,7 @@ from src.services.blocks.block_types.videoBlock.videoBlock import get_video_bloc
 # ---------------------------------------------------------------------------
 
 
-def _mk_block(db, *, block_uuid: str, org_id: int, course_id: int, activity_id: int, block_type: BlockTypeEnum) -> Block:
+async def _mk_block(db, *, block_uuid: str, org_id: int, course_id: int, activity_id: int, block_type: BlockTypeEnum) -> Block:
     b = Block(
         block_type=block_type,
         content={"file_id": "x"},
@@ -51,12 +51,12 @@ def _mk_block(db, *, block_uuid: str, org_id: int, course_id: int, activity_id: 
         update_date=str(datetime.now()),
     )
     db.add(b)
-    db.commit()
-    db.refresh(b)
+    await db.commit()
+    await db.refresh(b)
     return b
 
 
-def _mk_course(db, *, org_id: int, cid: int, uuid: str, public: bool) -> Course:
+async def _mk_course(db, *, org_id: int, cid: int, uuid: str, public: bool) -> Course:
     c = Course(
         id=cid,
         name=f"Course {cid}",
@@ -70,12 +70,12 @@ def _mk_course(db, *, org_id: int, cid: int, uuid: str, public: bool) -> Course:
         update_date=str(datetime.now()),
     )
     db.add(c)
-    db.commit()
-    db.refresh(c)
+    await db.commit()
+    await db.refresh(c)
     return c
 
 
-def _mk_activity(db, *, aid: int, org_id: int, course_id: int, uuid: str) -> Activity:
+async def _mk_activity(db, *, aid: int, org_id: int, course_id: int, uuid: str) -> Activity:
     a = Activity(
         id=aid,
         name=f"Activity {aid}",
@@ -90,8 +90,8 @@ def _mk_activity(db, *, aid: int, org_id: int, course_id: int, uuid: str) -> Act
         update_date=str(datetime.now()),
     )
     db.add(a)
-    db.commit()
-    db.refresh(a)
+    await db.commit()
+    await db.refresh(a)
     return a
 
 
@@ -113,7 +113,7 @@ async def test_member_of_own_org_can_read_block(
     db, org, course, activity, regular_user, mock_request, label, getter, block_type,
 ):
     """Positive path: org member reads a block that belongs to their own org's course."""
-    block = _mk_block(
+    block = await _mk_block(
         db,
         block_uuid=f"block_same_org_{label}",
         org_id=org.id,
@@ -133,15 +133,15 @@ async def test_cross_org_member_cannot_read_private_block(
     """Negative path: member of org A cannot read a private-course block from org B."""
     # Make cid/aid unique per parametrize case so parametrize doesn't collide.
     suffix_offset = {"image": 0, "video": 1, "pdf": 2, "audio": 3}[label]
-    other_course = _mk_course(
+    other_course = await _mk_course(
         db, org_id=other_org.id, cid=900 + suffix_offset,
         uuid=f"course_other_{label}", public=False,
     )
-    other_activity = _mk_activity(
+    other_activity = await _mk_activity(
         db, aid=900 + suffix_offset, org_id=other_org.id,
         course_id=other_course.id, uuid=f"activity_other_{label}",
     )
-    block = _mk_block(
+    block = await _mk_block(
         db,
         block_uuid=f"block_other_org_{label}",
         org_id=other_org.id,
@@ -161,7 +161,7 @@ async def test_anonymous_can_read_block_on_public_published_course(
     db, org, course, activity, anonymous_user, mock_request, label, getter, block_type,
 ):
     """Positive path: anonymous read of a public+published course's block stays allowed."""
-    block = _mk_block(
+    block = await _mk_block(
         db,
         block_uuid=f"block_public_{label}",
         org_id=org.id,
@@ -180,15 +180,15 @@ async def test_anonymous_cannot_read_block_on_private_course(
 ):
     """Negative path: anonymous cannot read a non-public course's block."""
     suffix_offset = {"image": 0, "video": 1, "pdf": 2, "audio": 3}[label]
-    private_course = _mk_course(
+    private_course = await _mk_course(
         db, org_id=other_org.id, cid=700 + suffix_offset,
         uuid=f"course_private_{label}", public=False,
     )
-    private_activity = _mk_activity(
+    private_activity = await _mk_activity(
         db, aid=700 + suffix_offset, org_id=other_org.id,
         course_id=private_course.id, uuid=f"activity_private_{label}",
     )
-    block = _mk_block(
+    block = await _mk_block(
         db,
         block_uuid=f"block_private_{label}",
         org_id=other_org.id,

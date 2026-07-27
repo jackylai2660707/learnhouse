@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { safeErrorType } from '@/lib/server-safe-logging'
 
 export async function POST(request: NextRequest) {
   try {
@@ -38,10 +39,11 @@ export async function POST(request: NextRequest) {
     })
 
     if (!tokenResponse.ok) {
-      const errorData = await tokenResponse.json().catch(() => ({}))
-      console.error('Google token exchange failed:', errorData)
+      console.error('[google-token] request failed', {
+        status: tokenResponse.status,
+      })
       return NextResponse.json(
-        { error: errorData.error_description || 'Token exchange failed' },
+        { error: 'Token exchange failed' },
         { status: tokenResponse.status }
       )
     }
@@ -55,10 +57,12 @@ export async function POST(request: NextRequest) {
       token_type: tokenData.token_type,
       id_token: tokenData.id_token,
     })
-  } catch (error: any) {
-    console.error('Google token exchange error:', error)
+  } catch (error: unknown) {
+    console.error('[google-token] request failed', {
+      error_type: safeErrorType(error),
+    })
     return NextResponse.json(
-      { error: error.message || 'Internal server error' },
+      { error: 'Internal server error' },
       { status: 500 }
     )
   }

@@ -49,7 +49,7 @@ function ForgotPasswordClient({ org }: ForgotPasswordClientProps) {
             setShowMessage(false)
             let res = await sendResetLink(values.email, org?.id)
             if (res.status == 200) {
-                setMessage(res.data + ', ' + t('auth.check_email_message'))
+                setMessage(`${res.data} ${t('auth.check_email_message')}`)
                 setShowMessage(true)
                 setIsSubmitting(false)
             } else {

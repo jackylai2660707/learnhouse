@@ -27,6 +27,9 @@ from src.db.users import (
 from src.services.security.password_validation import validate_password_complexity
 
 
+GENERIC_RESET_MESSAGE = "如帳號存在，重設驗證碼已寄出。"
+
+
 def _get_redis_connection():
     """Get Redis connection from config."""
     LH_CONFIG = get_learnhouse_config()
@@ -113,7 +116,7 @@ async def send_reset_password_code(
     if not user:
         logging.info(f"Password reset requested for non-existent email: {email[:3]}***")
         # Return same message as success to prevent enumeration
-        return "If an account with that email exists, a reset code has been sent"
+        return GENERIC_RESET_MESSAGE
 
     # Redis init
     LH_CONFIG = get_learnhouse_config()
@@ -181,7 +184,7 @@ async def send_reset_password_code(
         )
 
     logging.info(f"Password reset code sent to user: {user.user_uuid}")
-    return "If an account with that email exists, a reset code has been sent"
+    return GENERIC_RESET_MESSAGE
 
 
 async def change_password_with_reset_code(
@@ -321,7 +324,7 @@ async def send_reset_password_code_platform(
 
     if not user:
         logging.info(f"Password reset requested for non-existent email: {email[:3]}***")
-        return "If an account with that email exists, a reset code has been sent"
+        return GENERIC_RESET_MESSAGE
 
     r = _get_redis_connection()
 
@@ -362,7 +365,7 @@ async def send_reset_password_code_platform(
         )
 
     logging.info(f"Password reset code sent to user: {user.user_uuid}")
-    return "If an account with that email exists, a reset code has been sent"
+    return GENERIC_RESET_MESSAGE
 
 
 async def change_password_with_reset_code_platform(

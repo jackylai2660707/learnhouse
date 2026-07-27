@@ -1,4 +1,5 @@
 const { withSentryConfig } = require("@sentry/nextjs");
+const path = require('path')
 
 /** @type {import('common.next').NextConfig} */
 const nextConfig = {
@@ -33,6 +34,9 @@ const nextConfig = {
   },
   reactStrictMode: false,
   output: 'standalone',
+  turbopack: {
+    root: path.resolve(__dirname, '../..'),
+  },
   images: {
     remotePatterns: [
       {
@@ -114,7 +118,6 @@ module.exports = withSentryConfig(nextConfig, {
   org: process.env.SENTRY_ORG,
   project: process.env.SENTRY_PROJECT,
   silent: true,
-  disableLogger: true,
   tunnelRoute: "/monitoring",
   sourcemaps: {
     disable: !process.env.SENTRY_ORG || !process.env.SENTRY_PROJECT,

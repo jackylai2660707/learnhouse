@@ -31,6 +31,7 @@ export function generateEnvFile(config: SetupConfig): string {
   const nextAuthSecret = generateSecret()
   const jwtSecret = generateSecret()
   const collabInternalKey = generateSecret()
+  const deploymentEnvironment = config.domain === 'localhost' ? 'dev' : 'production'
 
   const lines: string[] = [
     '# LearnHouse Environment Variables',
@@ -40,7 +41,11 @@ export function generateEnvFile(config: SetupConfig): string {
     '# Domain & Hosting Configuration',
     '# =============================================================================',
     '',
+    `LEARNHOUSE_ENV=${deploymentEnvironment}`,
+    `NEXT_PUBLIC_LEARNHOUSE_ENV=${deploymentEnvironment}`,
     `LEARNHOUSE_DOMAIN=${domainWithPort}`,
+    `LEARNHOUSE_FRONTEND_DOMAIN=${domainWithPort}`,
+    `LEARNHOUSE_SSL=${config.useHttps ? 'True' : 'False'}`,
     `HTTP_PORT=${config.httpPort}`,
     '',
     '# =============================================================================',
@@ -97,6 +102,7 @@ export function generateEnvFile(config: SetupConfig): string {
     '# =============================================================================',
     '',
     `LEARNHOUSE_AUTH_JWT_SECRET_KEY=${jwtSecret}`,
+    'LEARNHOUSE_BOOTSTRAP_ADMIN=True',
     `LEARNHOUSE_INITIAL_ADMIN_EMAIL=${quoteEnvValue(config.adminEmail)}`,
     `LEARNHOUSE_INITIAL_ADMIN_PASSWORD=${quoteEnvValue(config.adminPassword)}`,
     `LEARNHOUSE_INITIAL_ORG_NAME=${quoteEnvValue(config.orgName || 'Default Organization')}`,
@@ -127,6 +133,7 @@ export function generateEnvFile(config: SetupConfig): string {
       '# AI Configuration',
       '# =============================================================================',
       '',
+      'LEARNHOUSE_AI_PROVIDER=gemini',
       `LEARNHOUSE_GEMINI_API_KEY=${config.geminiApiKey}`,
       'LEARNHOUSE_IS_AI_ENABLED=True',
     )

@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/nextjs";
+import { redactSentryEvent } from "@/lib/sentry-redaction";
 
 // Edge runtime can't use fs — use process.env with non-NEXT_PUBLIC fallback (available at runtime)
 const SENTRY_DSN = process.env.NEXT_PUBLIC_LEARNHOUSE_SENTRY_DSN || process.env.LEARNHOUSE_SENTRY_DSN;
@@ -8,8 +9,8 @@ if (SENTRY_DSN) {
   Sentry.init({
     dsn: SENTRY_DSN,
     environment: LEARNHOUSE_ENV,
-    sendDefaultPii: true,
-    enableLogs: true,
+    sendDefaultPii: false,
+    enableLogs: false,
     tracesSampleRate: LEARNHOUSE_ENV === "dev" ? 1.0 : 0.1,
     beforeSend(event, hint) {
       const msg =
@@ -21,7 +22,10 @@ if (SENTRY_DSN) {
       if (msg.includes("Organization not found")) return null;
       if (msg.includes("Organization has no config")) return null;
 
-      return event;
+      return redactSentryEvent(event);
+    },
+    beforeSendTransaction(event) {
+      return redactSentryEvent(event);
     },
   });
 }

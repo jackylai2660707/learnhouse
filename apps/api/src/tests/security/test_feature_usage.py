@@ -448,8 +448,11 @@ class TestFeatureUsage:
             redis_client.return_value.incrby.assert_called_once_with("ai_credits_purchased:1", 5)
 
         with patch("src.security.features_utils.usage._get_redis_client") as redis_client:
+            reset_script = redis_client.return_value.register_script.return_value
             assert usage.reset_ai_credits_usage(org.id) is True
-            redis_client.return_value.set.assert_called_once_with("ai_credits_used:1", 0)
+            reset_script.assert_called_once_with(
+                keys=["ai_credits_used:1", "ai_credits_period:1"], args=[]
+            )
 
     @pytest.mark.asyncio
     async def test_ai_credit_summary_paths(self, db, org):

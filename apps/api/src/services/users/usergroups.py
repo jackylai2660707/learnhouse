@@ -3,6 +3,7 @@ import logging
 from typing import Literal
 from uuid import uuid4
 from fastapi import HTTPException, Request
+from sqlalchemy import func
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from src.security.features_utils.usage import (
@@ -247,7 +248,29 @@ async def read_usergroups_by_org_id(
         db_session=db_session,
     )
 
-    usergroups = [UserGroupRead.model_validate(usergroup) for usergroup in usergroups]
+    member_counts_by_group_id: dict[int, int] = {}
+    usergroup_ids = [usergroup.id for usergroup in usergroups if usergroup.id is not None]
+    if usergroup_ids:
+        count_statement = (
+            select(UserGroupUser.usergroup_id, func.count(UserGroupUser.user_id))
+            .where(
+                UserGroupUser.org_id == org_id,
+                UserGroupUser.usergroup_id.in_(usergroup_ids),
+            )
+            .group_by(UserGroupUser.usergroup_id)
+        )
+        count_rows = (await db_session.execute(count_statement)).all()
+        member_counts_by_group_id = {
+            int(usergroup_id): int(member_count)
+            for usergroup_id, member_count in count_rows
+        }
+
+    usergroups = [
+        UserGroupRead.model_validate(usergroup).model_copy(
+            update={"member_count": member_counts_by_group_id.get(usergroup.id or 0, 0)}
+        )
+        for usergroup in usergroups
+    ]
 
     return usergroups
 

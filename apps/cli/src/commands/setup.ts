@@ -19,9 +19,10 @@ import { generateCaddyfile } from '../templates/caddyfile.js'
 import { writeConfig } from '../services/config-store.js'
 import { dockerComposeUp } from '../services/docker.js'
 import { waitForHealth, waitForOrgSeed } from '../services/health.js'
+import { finalizeBootstrapEnv } from '../services/bootstrap-env.js'
 import { checkPort, findAvailablePort } from '../utils/network.js'
 import { resolveAppImage } from '../services/version-check.js'
-import { validateEmail } from '../utils/validators.js'
+import { validateEmail, validatePassword } from '../utils/validators.js'
 
 const STEP_NAMES = [
   'Install Directory',
@@ -132,6 +133,11 @@ export async function setupCommand(options: SetupOptions) {
   if (options.ci) {
     if (!options.adminPassword) {
       console.error('Error: --admin-password is required in --ci mode')
+      process.exit(1)
+    }
+    const passwordErr = validatePassword(options.adminPassword)
+    if (passwordErr) {
+      console.error(`Error: --admin-password ${passwordErr.toLowerCase()}`)
       process.exit(1)
     }
 
@@ -539,6 +545,7 @@ export async function setupCommand(options: SetupOptions) {
     if (healthy) {
       const seeded = await waitForOrgSeed(`http://localhost:${config.httpPort}`, 'default')
       if (seeded) {
+        finalizeBootstrapEnv(path.join(finalDir, '.env'))
         s3.stop('LearnHouse is ready!')
       } else {
         s3.stop('API is healthy but the default organization was not seeded')
