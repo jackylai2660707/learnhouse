@@ -1,0 +1,11 @@
+[Unit]
+Description=Run LearnHouse RAG verification weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 03:45:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit=learnhouse-rag-verify.service
+
+[Install]
+WantedBy=timers.target

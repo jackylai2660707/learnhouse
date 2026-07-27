@@ -19,6 +19,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from src.db.courses.activities import Activity, ActivityTypeEnum
 from src.db.courses.blocks import Block, BlockTypeEnum
 from src.db.courses.chapters import Chapter
+from src.db.courses.course_chapters import CourseChapter
 from src.db.courses.courses import Course
 from src.db.courses.chapter_activities import ChapterActivity
 from src.services.courses.transfer.storage_utils import read_file_content
@@ -26,6 +27,10 @@ from src.services.courses.transfer.storage_utils import read_file_content
 logger = logging.getLogger(__name__)
 
 MAX_PDF_CHARS = 100_000
+
+
+class ContentExtractionIntegrityError(RuntimeError):
+    """Raised when indexed content ownership metadata is inconsistent."""
 
 
 def extract_text_from_prosemirror(content: dict) -> str:
@@ -161,8 +166,15 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
             texts.append(page_text)
             total_chars += len(page_text)
         return "\n".join(texts).strip()
-    except Exception as e:
-        logger.warning("Failed to extract PDF text: %s", e)
+    except Exception as exc:
+        logger.warning(
+            "ai.pdf.extraction_failed",
+            extra={
+                "integration": "pdf",
+                "operation": "extract_text",
+                "error_code": type(exc).__name__,
+            },
+        )
         return ""
 
 
@@ -258,11 +270,17 @@ async def extract_all_course_content(
     """
     # Get the course
     course = (await db_session.execute(
-        select(Course).where(Course.id == course_id)
+        select(Course)
+        .where(Course.id == course_id)
+        .execution_options(populate_existing=True)
     )).scalars().first()
     if not course:
         logger.warning("Course %d not found for extraction", course_id)
         return []
+    if course.org_id != org_id:
+        raise ContentExtractionIntegrityError(
+            "course organization does not match extraction organization"
+        )
 
     course_name = course.name
 
@@ -271,20 +289,60 @@ async def extract_all_course_content(
 
     # Get chapters for this course
     chapters = (await db_session.execute(
-        select(Chapter).where(Chapter.course_id == course_id)
+        select(Chapter)
+        .where(Chapter.course_id == course_id)
+        .execution_options(populate_existing=True)
     )).scalars().all()
+    if any(chapter.org_id != org_id for chapter in chapters):
+        raise ContentExtractionIntegrityError(
+            "course chapter organization metadata is inconsistent"
+        )
     chapter_map = {ch.id: ch.name for ch in chapters}
+    chapter_ids = {ch.id for ch in chapters if ch.id is not None}
+
+    course_chapters = (await db_session.execute(
+        select(CourseChapter)
+        .where(CourseChapter.course_id == course_id)
+        .execution_options(populate_existing=True)
+    )).scalars().all()
+    if any(
+        link.org_id != org_id or link.chapter_id not in chapter_ids
+        for link in course_chapters
+    ):
+        raise ContentExtractionIntegrityError(
+            "course chapter navigation metadata is inconsistent"
+        )
+    course_chapter_ids = {link.chapter_id for link in course_chapters}
 
     # Get all activities for this course
     activities = (await db_session.execute(
-        select(Activity).where(Activity.course_id == course_id)
+        select(Activity)
+        .where(Activity.course_id == course_id)
+        .execution_options(populate_existing=True)
     )).scalars().all()
+    if any(activity.org_id != org_id for activity in activities):
+        raise ContentExtractionIntegrityError(
+            "course activity organization metadata is inconsistent"
+        )
 
     for activity in activities:
         # Find chapter name via chapter_activities join
-        chapter_activity = (await db_session.execute(
-            select(ChapterActivity).where(ChapterActivity.activity_id == activity.id)
-        )).scalars().first()
+        chapter_activities = (await db_session.execute(
+            select(ChapterActivity)
+            .where(ChapterActivity.activity_id == activity.id)
+            .execution_options(populate_existing=True)
+        )).scalars().all()
+        if any(
+            link.course_id != course_id
+            or link.org_id != org_id
+            or link.chapter_id not in chapter_ids
+            or link.chapter_id not in course_chapter_ids
+            for link in chapter_activities
+        ):
+            raise ContentExtractionIntegrityError(
+                "activity chapter navigation metadata is inconsistent"
+            )
+        chapter_activity = chapter_activities[0] if chapter_activities else None
         chapter_name = chapter_map.get(chapter_activity.chapter_id, "") if chapter_activity else ""
 
         activity_name = activity.name
@@ -311,8 +369,22 @@ async def extract_all_course_content(
 
             # Extract from blocks attached to this activity
             blocks = (await db_session.execute(
-                select(Block).where(Block.activity_id == activity_id)
+                select(Block)
+                .where(Block.activity_id == activity_id)
+                .execution_options(populate_existing=True)
             )).scalars().all()
+            if any(
+                block.course_id != course_id
+                or block.org_id != org_id
+                or (
+                    block.chapter_id is not None
+                    and block.chapter_id not in chapter_ids
+                )
+                for block in blocks
+            ):
+                raise ContentExtractionIntegrityError(
+                    "activity block ownership metadata is inconsistent"
+                )
             for block in blocks:
                 block_content = _extract_block_content(block, activity_name)
                 if block_content:

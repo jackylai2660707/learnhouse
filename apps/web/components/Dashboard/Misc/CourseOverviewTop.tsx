@@ -9,7 +9,7 @@ import { getCourseThumbnailMediaDirectory } from '@services/media/media'
 import Link from 'next/link'
 import Image from 'next/image'
 import EmptyThumbnailImage from '../../../public/empty_thumbnail.png'
-import { BookCopy, BrainCircuit, Eye, Globe, GlobeLock, Loader2, Check, Info } from 'lucide-react'
+import { BookCopy, BrainCircuit, Eye, Globe, GlobeLock, Loader2, Check } from 'lucide-react'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@components/ui/tooltip'
 import { useTranslation } from 'react-i18next'
 import { updateCourse } from '@services/courses/courses'
@@ -20,6 +20,13 @@ import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '@/lib/query/keys'
 import toast from 'react-hot-toast'
 import { useState, useCallback } from 'react'
+import { useCourseRights } from '@components/Hooks/useCourseRights'
+
+type IndexStatus =
+  | { type: 'idle' }
+  | { type: 'loading'; message: string }
+  | { type: 'success'; message: string }
+  | { type: 'error'; message: string }
 
 export function CourseOverviewTop({
   params,
@@ -35,17 +42,22 @@ export function CourseOverviewTop({
   const [isPublishing, setIsPublishing] = useState(false)
   const [isIndexing, setIsIndexing] = useState(false)
   const [isIndexed, setIsIndexed] = useState(false)
+  const [indexStatus, setIndexStatus] = useState<IndexStatus>({ type: 'idle' })
 
   const courseStructure = course?.courseStructure
+  const { hasPermission: hasCoursePermission } = useCourseRights(
+    courseStructure?.course_uuid ?? ''
+  )
   const isPublished = courseStructure?.published
   const isAIEnabled = org?.config?.config?.resolved_features?.ai?.enabled ?? org?.config?.config?.features?.ai?.enabled !== false
+  const canIndexCourseForAI = isAIEnabled && hasCoursePermission('update_content')
 
   const indexCourseForAI = useCallback(async () => {
-    if (isIndexing || !courseStructure?.course_uuid) return
+    if (isIndexing || !canIndexCourseForAI || !courseStructure?.course_uuid) return
     setIsIndexing(true)
     setIsIndexed(false)
-
-    const toastId = toast.loading('Indexing course for AI...')
+    setIndexStatus({ type: 'loading', message: '正在為 AI 重建課程索引，請稍候。' })
+    let responseStatus: number | undefined
 
     try {
       const response = await fetch(`${getAPIUrl()}ai/rag/index`, {
@@ -56,23 +68,29 @@ export function CourseOverviewTop({
         },
         body: JSON.stringify({ course_uuid: courseStructure.course_uuid }),
       })
+      responseStatus = response.status
 
       if (!response.ok) {
-        const error = await response.json().catch(() => ({ detail: 'Unknown error' }))
-        throw new Error(error.detail || `HTTP ${response.status}`)
+        throw new Error(String(response.status))
       }
 
       const data = await response.json()
-      toast.dismiss(toastId)
-      toast.success(`Indexed ${data.chunks_indexed} chunks for AI`)
       setIsIndexed(true)
-    } catch (error: any) {
-      toast.dismiss(toastId)
-      toast.error(error.message || 'Failed to index course')
+      setIndexStatus({
+        type: 'success',
+        message: `已完成 AI 課程索引，共建立 ${data.chunks_indexed} 個內容片段。`,
+      })
+    } catch {
+      const message = responseStatus === 409
+        ? '課程內容在建立索引期間已更新，請稍後再試。'
+        : responseStatus === 503
+          ? 'AI 索引服務暫時不可用，原有索引已保留。請稍後再試。'
+          : 'AI 課程索引未能完成，請稍後再試。'
+      setIndexStatus({ type: 'error', message })
     } finally {
       setIsIndexing(false)
     }
-  }, [isIndexing, courseStructure, session.data?.tokens?.access_token])
+  }, [isIndexing, canIndexCourseForAI, courseStructure, session.data?.tokens?.access_token])
 
   const togglePublishStatus = useCallback(async () => {
     if (isPublishing || !courseStructure?.course_uuid) return
@@ -110,7 +128,7 @@ export function CourseOverviewTop({
           ? t('dashboard.courses.published_success')
           : t('dashboard.courses.unpublished_success')
       )
-    } catch (error) {
+    } catch {
       // Rollback on error
       dispatchCourse({
         type: 'mergePendingChanges',
@@ -217,7 +235,7 @@ export function CourseOverviewTop({
               </span>
             )}
           </button>
-          {isAIEnabled && (
+          {canIndexCourseForAI && (
             <>
               <div className="w-px self-stretch bg-neutral-200/80" />
               <TooltipProvider delayDuration={200}>
@@ -240,12 +258,12 @@ export function CourseOverviewTop({
                         <BrainCircuit className="w-4 h-4" />
                       )}
                       <span className="hidden sm:inline">
-                        {isIndexing ? 'Indexing...' : isIndexed ? 'Indexed' : 'Index for AI'}
+                        {isIndexing ? '建立索引中…' : isIndexed ? '索引完成' : '建立 AI 索引'}
                       </span>
                     </button>
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="max-w-xs text-xs">
-                    <p>Indexes this course's content so the AI Copilot can search and reference it when answering questions. Content is automatically re-indexed when activities are updated.</p>
+                    <p>建立課程內容索引，讓 AI 助教能在回答問題時搜尋及引用教材。活動更新後系統會自動重新建立索引。</p>
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
@@ -262,6 +280,21 @@ export function CourseOverviewTop({
           </Link>
         </div>
       </div>
+      {canIndexCourseForAI && indexStatus.type !== 'idle' && (
+        <div
+          role={indexStatus.type === 'error' ? 'alert' : 'status'}
+          aria-live="polite"
+          className={`mt-3 rounded-lg px-3 py-2 text-sm ${
+            indexStatus.type === 'error'
+              ? 'bg-red-50 text-red-800'
+              : indexStatus.type === 'success'
+                ? 'bg-green-50 text-green-800'
+                : 'bg-blue-50 text-blue-800'
+          }`}
+        >
+          {indexStatus.message}
+        </div>
+      )}
     </>
   )
 }

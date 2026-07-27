@@ -104,6 +104,7 @@ interface StreamFollowUpsEvent {
 interface StreamSourcesEvent {
   type: 'sources'
   sources: Array<{
+    citation_number?: number
     activity_uuid?: string
     activity_name?: string
     chapter_name?: string
@@ -129,6 +130,7 @@ type StreamEvent = StreamStartEvent | StreamChunkEvent | StreamDoneEvent | Strea
 
 export interface StreamSourceData {
   sources: Array<{
+    citation_number?: number
     activity_uuid?: string
     activity_name?: string
     chapter_name?: string

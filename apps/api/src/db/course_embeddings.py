@@ -9,6 +9,13 @@ class CourseEmbedding(SQLModel, table=True):
     __table_args__ = (
         Index("ix_course_embedding_org_id", "org_id"),
         Index("ix_course_embedding_course_id", "course_id"),
+        Index(
+            "ix_course_embedding_embedding_hnsw_cosine",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+            postgresql_with={"m": 16, "ef_construction": 64},
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)

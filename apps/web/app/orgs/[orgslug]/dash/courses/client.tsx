@@ -44,7 +44,7 @@ function CoursesHome(params: CourseProps) {
   const [newCourseModal, setNewCourseModal] = React.useState(isCreatingCourse)
   const [importCourseModal, setImportCourseModal] = React.useState(false)
   const [importType, setImportType] = React.useState<'select' | 'scorm' | 'learnhouse'>('select')
-  const [creationType, setCreationType] = React.useState<'select' | 'scratch' | 'ai'>('select')
+  const [creationType, setCreationType] = React.useState<'select' | 'scratch' | 'ai' | 'pdf'>('select')
   const [aiCourseModalOpen, setAiCourseModalOpen] = React.useState(false)
   const orgslug = params.orgslug
   const { isAdmin: isUserAdmin } = useAdminStatus()
@@ -187,13 +187,16 @@ function CoursesHome(params: CourseProps) {
 
   const router = useRouter()
 
-  const handleCreationTypeSelect = (type: 'scratch' | 'ai' | 'migrate') => {
+  const handleCreationTypeSelect = (type: 'scratch' | 'ai' | 'migrate' | 'pdf') => {
     if (type === 'ai') {
       setNewCourseModal(false)
       setAiCourseModalOpen(true)
     } else if (type === 'migrate') {
       setNewCourseModal(false)
       router.push(getUriWithOrg(orgslug, '/dash/courses/migrate'))
+    } else if (type === 'pdf') {
+      setNewCourseModal(false)
+      router.push(getUriWithOrg(orgslug, '/dash/courses/pdf-build'))
     } else {
       setCreationType('scratch')
     }

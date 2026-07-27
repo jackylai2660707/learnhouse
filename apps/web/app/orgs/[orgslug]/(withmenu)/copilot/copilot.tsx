@@ -42,6 +42,7 @@ import {
   GlobeSimple,
 } from '@phosphor-icons/react'
 import Link from 'next/link'
+import { citationLabel, parseCitationText, sourceActivityPath } from '@/lib/rag-citations'
 
 export type CopilotProps = {
   orgslug: string
@@ -67,10 +68,10 @@ export function groupSessionsByDate(sessions: RAGChatSession[]) {
   const weekAgo = new Date(todayStart.getTime() - 7 * 24 * 60 * 60 * 1000)
 
   const groups: { label: string; sessions: RAGChatSession[] }[] = [
-    { label: 'Favorites', sessions: [] },
-    { label: 'Today', sessions: [] },
-    { label: 'Previous 7 days', sessions: [] },
-    { label: 'Older', sessions: [] },
+    { label: '常用對話', sessions: [] },
+    { label: '今天', sessions: [] },
+    { label: '最近 7 天', sessions: [] },
+    { label: '較早之前', sessions: [] },
   ]
 
   for (const s of sessions) {
@@ -144,8 +145,8 @@ export function CopilotChat({ orgslug }: CopilotProps) {
   const courses = coursesData?.data || coursesData || []
 
   const selectedCourseName = selectedCourse
-    ? courses.find?.((c: any) => c.course_uuid === selectedCourse)?.name || 'Selected Course'
-    : 'All courses'
+    ? courses.find?.((c: any) => c.course_uuid === selectedCourse)?.name || '已選課程'
+    : '所有課程'
 
   // Track viewport size for mobile behavior
   useEffect(() => {
@@ -220,7 +221,7 @@ export function CopilotChat({ orgslug }: CopilotProps) {
       setChatMode(sessionMeta.mode || 'course_only')
       isNewChatRef.current = false
     } catch {
-      setError('Failed to load session')
+      setError('載入對話失敗')
     } finally {
       setIsLoadingSession(false)
     }
@@ -385,7 +386,7 @@ export function CopilotChat({ orgslug }: CopilotProps) {
                 className="flex items-center gap-2 px-3 py-1.5 text-[13px] font-medium rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition-colors"
               >
                 <Plus size={14} weight="bold" />
-                <span>New Chat</span>
+                <span>新增對話</span>
               </button>
               <button
                 onClick={() => setSidebarOpen(false)}
@@ -400,7 +401,7 @@ export function CopilotChat({ orgslug }: CopilotProps) {
               {sessions.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-32 text-center px-4">
                   <ChatCircleDots size={24} className="text-neutral-300 dark:text-neutral-600 mb-2" />
-                  <p className="text-xs text-neutral-400 dark:text-neutral-500">No conversations yet</p>
+                  <p className="text-xs text-neutral-400 dark:text-neutral-500">暫時沒有對話</p>
                 </div>
               ) : (
                 groupSessionsByDate(sessions).map((group) => (
@@ -465,7 +466,7 @@ export function CopilotChat({ orgslug }: CopilotProps) {
           {isLoadingSession && (
             <div className="flex flex-col items-center justify-center h-full">
               <SpinnerGap size={20} className="animate-spin text-violet-400 mb-2" />
-              <span className="text-sm text-neutral-400 dark:text-neutral-500">Loading conversation...</span>
+              <span className="text-sm text-neutral-400 dark:text-neutral-500">載入對話中...</span>
             </div>
           )}
 
@@ -485,9 +486,9 @@ export function CopilotChat({ orgslug }: CopilotProps) {
               </svg>
               </div>
               <div className="space-y-2">
-                <h2 className="text-xl font-bold text-neutral-900 dark:text-white">Course Copilot</h2>
+                <h2 className="text-xl font-bold text-neutral-900 dark:text-white">課程 AI 助手</h2>
                 <p className="text-sm text-neutral-500 dark:text-neutral-400 max-w-md leading-relaxed">
-                  Ask questions about your courses and get answers grounded in course content, with references to the source material.
+                  可直接用繁體中文提問，系統會優先根據課程內容回答，並列出參考來源。
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -502,7 +503,7 @@ export function CopilotChat({ orgslug }: CopilotProps) {
                     }`}
                   >
                     <BookOpen size={15} weight="duotone" />
-                    <span>Course Only</span>
+                    <span>只問課程</span>
                   </button>
                   <button
                     onClick={() => setChatMode('general')}
@@ -513,7 +514,7 @@ export function CopilotChat({ orgslug }: CopilotProps) {
                     }`}
                   >
                     <GlobeSimple size={15} weight="duotone" />
-                    <span>General</span>
+                    <span>一般提問</span>
                   </button>
                 </div>
                 {/* Course picker */}
@@ -608,10 +609,10 @@ export function CopilotChat({ orgslug }: CopilotProps) {
                 ? 'bg-violet-50 dark:bg-violet-500/10 text-violet-600 dark:text-violet-400'
                 : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-800'
             }`}
-            title={chatMode === 'general' ? 'General Knowledge mode' : 'Course Only mode'}
+            title={chatMode === 'general' ? '一般提問模式' : '只問課程模式'}
           >
             {chatMode === 'general' ? <GlobeSimple size={13} weight="duotone" /> : <BookOpen size={13} weight="duotone" />}
-            <span className="hidden sm:inline">{chatMode === 'general' ? 'General' : 'Course'}</span>
+            <span className="hidden sm:inline">{chatMode === 'general' ? '一般' : '課程'}</span>
           </button>
           {messages.length > 0 && (
             <div className="relative" ref={dropdownRef}>
@@ -630,8 +631,8 @@ export function CopilotChat({ orgslug }: CopilotProps) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            aria-label="Ask about your courses"
-            placeholder={isLoadingSession ? 'Loading conversation...' : isWaiting ? 'Thinking...' : chatMode === 'general' ? 'Ask anything...' : 'Ask about your courses...'}
+            aria-label="詢問課程內容"
+            placeholder={isLoadingSession ? '載入對話中...' : isWaiting ? '正在思考...' : chatMode === 'general' ? '輸入你的問題...' : '詢問課程內容...'}
             disabled={isInputDisabled}
             className="flex-1 bg-transparent outline-none text-sm text-neutral-900 dark:text-white placeholder:text-neutral-400 dark:placeholder:text-neutral-500 disabled:opacity-40"
           />
@@ -729,7 +730,7 @@ export function ChatTopBar({ title, isFavorite, onRename, onToggleFavorite, onTo
             ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-500/10'
             : 'text-neutral-300 dark:text-neutral-600 hover:text-amber-400 hover:bg-neutral-100 dark:hover:bg-neutral-800'
         }`}
-        title={isFavorite ? 'Remove from favorites' : 'Add to favorites'}
+        title={isFavorite ? '取消常用' : '加入常用'}
       >
         <Star size={16} weight={isFavorite ? 'fill' : 'regular'} />
       </button>
@@ -793,7 +794,7 @@ export function AssistantMessage({ content, sources, orgslug, isStreaming, isWai
       {courseNames.length > 0 && !isWaiting && (
         <div className="flex items-center gap-1.5 text-[11px] text-neutral-400 dark:text-neutral-500 font-medium">
           <BookOpen size={11} weight="bold" className="text-violet-400" />
-          <span>Answering from {courseNames.join(', ')}</span>
+          <span>根據 {courseNames.join(', ')} 回答</span>
         </div>
       )}
 
@@ -828,34 +829,30 @@ export function ThinkingIndicator() {
  * Render a single citation badge [N] as a clickable link to the source activity.
  */
 function CitationBadge({ num, sources, orgslug }: { num: number; sources: StreamSourceData['sources']; orgslug: string }) {
-  const source = sources[num - 1]
+  const source = sources.find((item) => item.citation_number === num)
+    ?? (sources[num - 1]?.citation_number == null ? sources[num - 1] : undefined)
   if (!source) {
-    return (
-      <span className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-md bg-neutral-100 dark:bg-neutral-700 text-[10px] font-bold text-neutral-400 dark:text-neutral-500 align-middle mx-0.5">
-        {num}
-      </span>
-    )
+    return <span>{citationLabel(num)}</span>
   }
 
-  const courseId = source.course_uuid?.replace(/^course_/, '') || ''
-  const activityId = source.activity_uuid?.replace(/^activity_/, '') || ''
-  const href = activityId && courseId
-    ? getUriWithOrg(orgslug, `/course/${courseId}/activity/${activityId}`)
-    : null
+  const sourcePath = sourceActivityPath(source.course_uuid, source.activity_uuid)
+  const href = sourcePath ? getUriWithOrg(orgslug, sourcePath) : null
+  const title = [source.course_name, source.chapter_name, source.activity_name].filter(Boolean).join(' > ')
+  const accessibleName = `開啟教材來源 ${citationLabel(num)}${title ? `：${title}` : ''}（新分頁）`
 
   const badge = (
     <span
       className="inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-md bg-violet-100 dark:bg-violet-500/15 text-[10px] font-bold text-violet-600 dark:text-violet-400 align-middle mx-0.5 hover:bg-violet-200 dark:hover:bg-violet-500/25 cursor-pointer transition-colors"
-      title={[source.course_name, source.chapter_name, source.activity_name].filter(Boolean).join(' > ')}
+      title={title}
     >
-      {num}
+      {citationLabel(num)}
     </span>
   )
 
   if (href) {
-    return <Link href={href} target="_blank" className="no-underline">{badge}</Link>
+    return <Link href={href} target="_blank" rel="noopener noreferrer" aria-label={accessibleName} className="no-underline">{badge}</Link>
   }
-  return badge
+  return <span role="doc-biblioref" aria-label={`教材來源 ${citationLabel(num)}${title ? `：${title}` : ''}`}>{badge}</span>
 }
 
 /**
@@ -863,35 +860,11 @@ function CitationBadge({ num, sources, orgslug }: { num: number; sources: Stream
  * Returns an array of strings and React elements.
  */
 function renderCitationsInText(text: string, sources: StreamSourceData['sources'], orgslug: string): React.ReactNode[] {
-  // Match [1], [2], [3, 1], [1,2,3], etc.
-  const citationRegex = /\[(\d+(?:\s*,\s*\d+)*)\]/g
-  const parts: React.ReactNode[] = []
-  let lastIndex = 0
-  let match: RegExpExecArray | null
-
-  while ((match = citationRegex.exec(text)) !== null) {
-    // Add text before the citation
-    if (match.index > lastIndex) {
-      parts.push(text.slice(lastIndex, match.index))
-    }
-
-    // Parse the numbers inside brackets
-    const nums = match[1].split(',').map((n) => parseInt(n.trim(), 10)).filter((n) => !isNaN(n))
-    for (let i = 0; i < nums.length; i++) {
-      parts.push(
-        <CitationBadge key={`${match.index}-${nums[i]}`} num={nums[i]} sources={sources} orgslug={orgslug} />
-      )
-    }
-
-    lastIndex = match.index + match[0].length
-  }
-
-  // Add remaining text
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex))
-  }
-
-  return parts
+  return parseCitationText(text, sources.length).map((token, index) => (
+    token.type === 'text'
+      ? token.value
+      : <CitationBadge key={`${index}-${token.number}`} num={token.number} sources={sources} orgslug={orgslug} />
+  ))
 }
 
 export function CopilotMarkdown({ content, sources = [], orgslug, isStreaming = false }: {
@@ -956,7 +929,7 @@ export function CourseDropdown({ courses, selectedCourse, onSelect, position = '
         }`}
       >
         <Sparkle size={15} weight="duotone" className="text-violet-500 flex-shrink-0" />
-        <span>All courses</span>
+        <span>所有課程</span>
       </button>
       <div className="h-px bg-neutral-100 dark:bg-neutral-800 mx-2 my-1" />
       {Array.isArray(courses) && courses.map((course: any) => (
@@ -981,27 +954,29 @@ export function SourcesCompact({ sources, orgslug }: { sources: StreamSourceData
   return (
     <div className="relative z-10 flex flex-wrap gap-x-3 gap-y-1 px-1">
       {sources.map((source, i) => {
-        const courseId = source.course_uuid?.replace(/^course_/, '') || ''
-        const activityId = source.activity_uuid?.replace(/^activity_/, '') || ''
-        const href = activityId && courseId
-          ? getUriWithOrg(orgslug, `/course/${courseId}/activity/${activityId}`)
-          : null
+        const citationNumber = Number.isInteger(source.citation_number) && source.citation_number! > 0
+          ? source.citation_number!
+          : i + 1
+        const sourcePath = sourceActivityPath(source.course_uuid, source.activity_uuid)
+        const href = sourcePath ? getUriWithOrg(orgslug, sourcePath) : null
+        const title = [source.course_name, source.chapter_name, source.activity_name].filter(Boolean).join(' > ')
+        const accessibleName = `開啟教材來源 ${citationLabel(citationNumber)}${title ? `：${title}` : ''}（新分頁）`
 
         const inner = (
           <span className="inline-flex items-center gap-1.5 text-[11px] text-neutral-400 dark:text-neutral-500 hover:text-violet-600 dark:hover:text-violet-400 transition-colors group">
             <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-violet-100 dark:bg-violet-500/15 text-[9px] font-bold text-violet-600 dark:text-violet-400 flex-shrink-0">
-              {i + 1}
+              {citationLabel(citationNumber)}
             </span>
             <span className="truncate max-w-xs font-medium text-neutral-500 dark:text-neutral-400 group-hover:text-violet-600 dark:group-hover:text-violet-400">
-              {source.activity_name || 'Unknown'}
+              {source.activity_name || '未知來源'}
             </span>
           </span>
         )
 
         if (href) {
-          return <Link key={i} href={href} target="_blank">{inner}</Link>
+          return <Link key={citationNumber} href={href} target="_blank" rel="noopener noreferrer" aria-label={accessibleName}>{inner}</Link>
         }
-        return <span key={i}>{inner}</span>
+        return <span key={citationNumber} role="doc-biblioref" aria-label={`教材來源 ${citationLabel(citationNumber)}${title ? `：${title}` : ''}`}>{inner}</span>
       })}
     </div>
   )

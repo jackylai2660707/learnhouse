@@ -7,6 +7,7 @@ from sqlmodel import SQLModel, Session
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlmodel.ext.asyncio.session import AsyncSession
+from src.services.ai.rag.index_lock import install_indexed_content_write_lock
 
 
 def import_all_models():
@@ -140,6 +141,11 @@ _async_session_factory = async_sessionmaker(
     class_=AsyncSession,
     expire_on_commit=False,
 )
+
+# Install indexed-content writer serialization at the central Session factory
+# boundary. Standalone scripts importing this module receive the same lock
+# contract as API workers without relying on a course/RAG service import.
+install_indexed_content_write_lock()
 
 
 def _register_cache_invalidation_hooks():
