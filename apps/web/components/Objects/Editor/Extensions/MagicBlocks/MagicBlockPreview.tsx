@@ -108,7 +108,8 @@ ${html}
         src={blobUrl || undefined}
         className="w-full h-full bg-white block"
         style={{ border: 'none', minHeight: '100%' }}
-        sandbox="allow-scripts allow-same-origin"
+        sandbox="allow-scripts"
+        referrerPolicy="no-referrer"
         title="MagicBlock Preview"
       />
     </div>

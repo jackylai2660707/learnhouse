@@ -1,6 +1,6 @@
 'use client'
 import React from 'react'
-import { PenLine, Sparkles, Lock, Upload } from 'lucide-react'
+import { FileText, PenLine, Sparkles, Lock, Upload } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import PlanBadge from '@components/Dashboard/Shared/PlanRestricted/PlanBadge'
 import { PlanLevel } from '@services/plans/plans'
@@ -9,7 +9,7 @@ import lrnaiIcon from 'public/lrnai_icon.png'
 import { useOrg } from '@components/Contexts/OrgContext'
 
 interface CourseCreationTypeSelectorProps {
-  onSelectType: (type: 'scratch' | 'ai' | 'migrate') => void
+  onSelectType: (type: 'scratch' | 'ai' | 'migrate' | 'pdf') => void
   currentPlan: PlanLevel
 }
 
@@ -20,8 +20,8 @@ function CourseCreationTypeSelector({ onSelectType, currentPlan }: CourseCreatio
   const canUseAI = rf?.ai?.enabled === true
 
   return (
-    <div className="min-w-[650px] py-2">
-      <div className="grid grid-cols-3 gap-4">
+    <div className="w-full max-w-[860px] py-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         {/* Start from scratch option */}
         <button
           onClick={() => onSelectType('scratch')}
@@ -89,6 +89,38 @@ function CourseCreationTypeSelector({ onSelectType, currentPlan }: CourseCreatio
           </h3>
           <p className="text-sm text-gray-500 text-center">
             {t('courses.create.from_existing_description')}
+          </p>
+        </button>
+
+        {/* Build from PDF source material */}
+        <button
+          onClick={() => canUseAI && onSelectType('pdf')}
+          disabled={!canUseAI}
+          className={`group flex flex-col items-center p-6 rounded-xl border-2 transition-all duration-200 ${
+            canUseAI
+              ? 'border-gray-200 bg-white hover:border-purple-500 hover:shadow-lg cursor-pointer'
+              : 'border-gray-100 bg-gray-50 cursor-not-allowed opacity-60'
+          }`}
+        >
+          <div className={`w-14 h-14 rounded-full flex items-center justify-center mb-4 transition-colors ${
+            canUseAI
+              ? 'bg-purple-50 group-hover:bg-purple-100'
+              : 'bg-gray-100'
+          }`}>
+            {canUseAI ? (
+              <FileText size={28} className="text-purple-600" />
+            ) : (
+              <Lock size={28} className="text-gray-400" />
+            )}
+          </div>
+          <div className="flex items-center gap-2 mb-1">
+            <h3 className={`font-semibold ${canUseAI ? 'text-gray-900' : 'text-gray-500'}`}>
+              PDF 智能建課
+            </h3>
+            <PlanBadge currentPlan={currentPlan} requiredPlan={(rf?.ai?.required_plan || 'standard') as PlanLevel} size="sm" />
+          </div>
+          <p className={`text-sm text-center ${canUseAI ? 'text-gray-500' : 'text-gray-400'}`}>
+            上傳 PDF，自動生成課程與 AI 問答知識庫
           </p>
         </button>
       </div>

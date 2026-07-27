@@ -76,7 +76,7 @@ class TestPodcastsRouter:
             update_date="2024-01-01",
         )
         db.add(podcast_row)
-        db.commit()
+        await db.commit()
 
         with patch("src.routers.podcasts.podcasts.create_podcast", new_callable=AsyncMock, return_value=_mock_podcast()):
             response = await client.post("/api/v1/podcasts/?org_id=1", data={"name": "Podcast", "public": "true"})

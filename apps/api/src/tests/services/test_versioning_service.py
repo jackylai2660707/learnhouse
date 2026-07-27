@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from sqlmodel import select
 
 from src.db.courses.activity_versions import ActivityVersion, ActivityVersionRead
+from src.db.coding_challenges import CodingChallenge, CodingChallengeTest
 from src.services.courses.activities.versioning import (
     MAX_ACTIVITY_VERSIONS,
     cleanup_old_versions,
@@ -149,6 +150,51 @@ class TestGetActivityVersions:
         assert isinstance(result[0], ActivityVersionRead)
 
     @pytest.mark.asyncio
+    async def test_version_history_sanitizes_legacy_challenge_secrets(
+        self, mock_request, db, activity, admin_user
+    ):
+        db.add(ActivityVersion(
+            activity_id=activity.id,
+            org_id=activity.org_id,
+            version_number=1,
+            content={"type": "doc", "content": [{"type": "blockCode", "attrs": {
+                "solutionCode": "private",
+                "testCases": [{"id": "hidden", "hidden": True, "expectedStdout": "private"}],
+                "hiddenTestCases": [{"id": "hidden", "expectedStdout": "private"}],
+            }}]},
+            created_at=datetime.utcnow(),
+        ))
+        await db.commit()
+        with patch(
+            "src.services.courses.activities.versioning.check_feature_access",
+            new_callable=AsyncMock,
+        ), patch(
+            "src.services.courses.activities.versioning.check_resource_access",
+            new_callable=AsyncMock,
+        ):
+            versions = await get_activity_versions(
+                mock_request, activity.activity_uuid, admin_user, db
+            )
+        attrs = versions[0].content["content"][0]["attrs"]
+        assert "solutionCode" not in attrs
+        assert "hiddenTestCases" not in attrs
+        assert attrs["testCases"] == []
+
+    @pytest.mark.asyncio
+    async def test_student_cannot_read_activity_version_history(
+        self, mock_request, db, activity, regular_user
+    ):
+        with patch(
+            "src.services.courses.activities.versioning.check_feature_access",
+            new_callable=AsyncMock,
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await get_activity_versions(
+                    mock_request, activity.activity_uuid, regular_user, db
+                )
+        assert exc_info.value.status_code == 403
+
+    @pytest.mark.asyncio
     async def test_raises_404_for_unknown_activity(
         self, mock_request, db, admin_user
     ):
@@ -282,6 +328,56 @@ class TestRestoreActivityVersion:
             )
 
         assert result.activity_uuid == activity.activity_uuid
+
+    @pytest.mark.asyncio
+    async def test_restore_migrates_legacy_challenge_secrets_and_stores_safe_content(
+        self, mock_request, db, activity, admin_user
+    ):
+        legacy_content = {"type": "doc", "content": [{"type": "blockCode", "attrs": {
+            "id": "block_restore",
+            "challengeUuid": "challenge_restore",
+            "languageId": 71,
+            "solutionCode": "private",
+            "testCases": [{"testUuid": "visible_restore", "expectedStdout": "ok"}],
+            "hiddenTestCases": [{"testUuid": "hidden_restore", "expectedStdout": "private"}],
+        }}]}
+        db.add(ActivityVersion(
+            activity_id=activity.id,
+            org_id=activity.org_id,
+            version_number=1,
+            content=legacy_content,
+            created_at=datetime.utcnow(),
+        ))
+        await db.commit()
+        with patch(
+            "src.services.courses.activities.versioning.check_feature_access",
+            new_callable=AsyncMock,
+        ), patch(
+            "src.services.courses.activities.versioning.check_resource_access",
+            new_callable=AsyncMock,
+        ), patch(
+            "src.services.courses.activities.versioning.dispatch_webhooks",
+            new_callable=AsyncMock,
+        ):
+            restored = await restore_activity_version(
+                mock_request, activity.activity_uuid, 1, admin_user, db
+            )
+
+        attrs = restored.content["content"][0]["attrs"]
+        assert "solutionCode" not in attrs
+        assert "hiddenTestCases" not in attrs
+        challenge = (
+            await db.execute(select(CodingChallenge).where(
+                CodingChallenge.challenge_uuid == "challenge_restore"
+            ))
+        ).scalars().one()
+        tests = (
+            await db.execute(select(CodingChallengeTest).where(
+                CodingChallengeTest.challenge_id == challenge.id
+            ))
+        ).scalars().all()
+        assert challenge.solution_code == "private"
+        assert len(tests) == 2
 
     @pytest.mark.asyncio
     async def test_raises_404_when_version_not_found(

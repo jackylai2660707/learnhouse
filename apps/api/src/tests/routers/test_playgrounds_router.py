@@ -104,7 +104,7 @@ class TestPlaygroundsRouter:
 
     @pytest.mark.asyncio
     async def test_playground_generator_helpers_and_error_paths(
-        self, client, db, org, other_org, admin_user
+        self, client, db, org, other_org, admin_user, mock_request
     ):
         board = Playground(
             id=2,
@@ -198,8 +198,12 @@ class TestPlaygroundsRouter:
         db.add(course)
         await db.commit()
 
-        assert await _get_course_context(None, org.id, db, "Prompt") == (None, None)
-        assert await _get_course_context("missing-course", org.id, db, "Prompt") == (None, None)
+        assert await _get_course_context(
+            mock_request, admin_user, None, org.id, db, "Prompt"
+        ) == (None, None)
+        assert await _get_course_context(
+            mock_request, admin_user, "missing-course", org.id, db, "Prompt"
+        ) == (None, None)
         other_org_course = Course(
             id=11,
             name="Other",
@@ -214,24 +218,44 @@ class TestPlaygroundsRouter:
         )
         db.add(other_org_course)
         await db.commit()
-        assert await _get_course_context("course_other", org.id, db, "Prompt") == (None, None)
+        assert await _get_course_context(
+            mock_request, admin_user, "course_other", org.id, db, "Prompt"
+        ) == (None, None)
 
         with patch(
+            "src.services.ai.rag.access_scope.resolve_rag_retrieval_scope",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    course_ids=[course.id], activity_ids=[100]
+                )
+            ),
+        ), patch(
             "src.services.ai.rag.query_service.query_course_rag",
             new_callable=AsyncMock,
             return_value={"context": "rag-context"},
         ):
-            assert await _get_course_context("course_test", org.id, db, "Prompt") == (
+            assert await _get_course_context(
+                mock_request, admin_user, "course_test", org.id, db, "Prompt"
+            ) == (
                 "rag-context",
                 course.id,
             )
 
         with patch(
+            "src.services.ai.rag.access_scope.resolve_rag_retrieval_scope",
+            new=AsyncMock(
+                return_value=SimpleNamespace(
+                    course_ids=[course.id], activity_ids=[100]
+                )
+            ),
+        ), patch(
             "src.services.ai.rag.query_service.query_course_rag",
             new_callable=AsyncMock,
             side_effect=RuntimeError("rag boom"),
         ):
-            assert await _get_course_context("course_test", org.id, db, "Prompt") == (
+            assert await _get_course_context(
+                mock_request, admin_user, "course_test", org.id, db, "Prompt"
+            ) == (
                 None,
                 course.id,
             )

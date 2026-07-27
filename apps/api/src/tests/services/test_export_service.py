@@ -15,6 +15,11 @@ from src.db.courses.chapter_activities import ChapterActivity
 from src.db.courses.chapters import Chapter
 from src.db.courses.course_chapters import CourseChapter
 from src.db.courses.courses import Course, ThumbnailType
+from src.db.coding_challenges import (
+    CodingChallenge,
+    CodingChallengeTest,
+    CodingChallengeTestVisibility,
+)
 from src.db.organizations import Organization
 from src.security.rbac import AccessAction
 from src.services.courses.transfer.export_service import (
@@ -195,6 +200,29 @@ class TestExportCoursesBatchValidation:
         assert "Course not found" in exc_info.value.detail
 
     @pytest.mark.asyncio
+    async def test_read_only_user_cannot_export_teacher_challenge_secrets(
+        self, mock_request, db, course, admin_user
+    ):
+        with patch(
+            "src.services.courses.transfer.export_service.check_resource_access",
+            new_callable=AsyncMock,
+            side_effect=HTTPException(status_code=403, detail="Forbidden"),
+        ) as mock_access:
+            with pytest.raises(HTTPException) as exc_info:
+                await export_courses_batch(
+                    mock_request, [course.course_uuid], admin_user, db
+                )
+
+        assert exc_info.value.status_code == 403
+        mock_access.assert_awaited_once_with(
+            mock_request,
+            db,
+            admin_user,
+            course.course_uuid,
+            AccessAction.UPDATE,
+        )
+
+    @pytest.mark.asyncio
     async def test_export_courses_batch_rejects_missing_organization(
         self, mock_request, db, admin_user
     ):
@@ -260,7 +288,7 @@ class TestExportCoursesBatchValidation:
             new_callable=AsyncMock,
         ) as mock_access, patch(
             "src.services.courses.transfer.export_service._load_course_export_data",
-            return_value=({"course_uuid": course.course_uuid}, []),
+            return_value=({"course_uuid": course.course_uuid}, [], []),
         ) as mock_loader, patch(
             "src.services.courses.transfer.export_service.asyncio.to_thread",
             new_callable=AsyncMock,
@@ -274,17 +302,117 @@ class TestExportCoursesBatchValidation:
             db,
             admin_user,
             course.course_uuid,
-            AccessAction.READ,
+            AccessAction.UPDATE,
         )
         mock_loader.assert_called_once_with(course, db)
         mock_to_thread.assert_awaited_once()
         build_args = mock_to_thread.await_args.args
         assert build_args[0] == _build_export_zip
-        assert build_args[1] == [("course_test", "Test Course", {"course_uuid": "course_test"}, [])]
+        assert build_args[1] == [
+            ("course_test", "Test Course", {"course_uuid": "course_test"}, [], [])
+        ]
         assert build_args[2] == "org_test"
 
 
 class TestLoadCourseExportData:
+    @pytest.mark.asyncio
+    async def test_export_puts_durable_secrets_only_in_private_manifest(
+        self, db, org, course, activity
+    ):
+        challenge = CodingChallenge(
+            challenge_uuid="challenge_export_private",
+            org_id=org.id,
+            course_id=course.id,
+            activity_id=activity.id,
+            block_id="block_export_private",
+            solution_code="private-solution",
+        )
+        db.add(challenge)
+        await db.flush()
+        db.add(
+            CodingChallengeTest(
+                challenge_id=challenge.id,
+                test_uuid="hidden-export-private",
+                label="Hidden",
+                stdin="private-input",
+                expected_stdout="private-output",
+                visibility=CodingChallengeTestVisibility.HIDDEN,
+                order=0,
+            )
+        )
+        activity.content = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "blockCode",
+                    "attrs": {
+                        "id": "block_export_private",
+                        "challengeUuid": "challenge_export_private",
+                        "testCases": [],
+                    },
+                }
+            ],
+        }
+        db.add(activity)
+        await db.commit()
+
+        _course_data, chapters, secrets = await _load_course_export_data(course, db)
+        public_activity = chapters[0][1][0][0]
+
+        assert "private-solution" not in json.dumps(public_activity)
+        assert "private-input" not in json.dumps(public_activity)
+        assert secrets == [
+            {
+                "activityUuid": activity.activity_uuid,
+                "blockId": "block_export_private",
+                "challengeUuid": "challenge_export_private",
+                "solutionCode": "private-solution",
+                "hiddenTestCases": [
+                    {
+                        "testUuid": "hidden-export-private",
+                        "label": "Hidden",
+                        "stdin": "private-input",
+                        "expectedStdout": "private-output",
+                    }
+                ],
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_export_sanitizes_legacy_coding_challenge_secrets(
+        self, db, course, activity
+    ):
+        activity.content = {
+            "type": "doc",
+            "content": [{
+                "type": "blockCode",
+                "attrs": {
+                    "challengeUuid": "challenge_legacy_export",
+                    "solutionCode": "private-solution",
+                    "testCases": [
+                        {"id": "visible", "expectedStdout": "visible"},
+                        {"id": "hidden", "hidden": True, "expectedStdout": "private"},
+                    ],
+                    "hiddenTestCases": [
+                        {"id": "hidden", "expectedStdout": "private"}
+                    ],
+                },
+            }],
+        }
+        db.add(activity)
+        await db.commit()
+
+        _course_data, chapters, challenge_secrets = await _load_course_export_data(
+            course, db
+        )
+        exported = chapters[0][1][0][0]["content"]
+        attrs = exported["content"][0]["attrs"]
+        assert "solutionCode" not in attrs
+        assert "hiddenTestCases" not in attrs
+        assert [item["id"] for item in attrs["testCases"]] == ["visible"]
+        assert "private-solution" not in json.dumps(exported)
+        assert challenge_secrets == []
+
     @pytest.mark.asyncio
     async def test_load_course_export_data_serializes_chapters_activities_and_blocks(
         self, db, org, course, chapter, activity
@@ -345,7 +473,9 @@ class TestLoadCourseExportData:
             details=None,
         )
 
-        course_data, chapters = await _load_course_export_data(course, db)
+        course_data, chapters, _challenge_secrets = await _load_course_export_data(
+            course, db
+        )
 
         assert course_data["course_uuid"] == "course_test"
         assert course_data["thumbnail_type"] == ThumbnailType.BOTH.value
@@ -390,10 +520,13 @@ class TestLoadCourseExportData:
         await db.commit()
         await db.refresh(empty_course)
 
-        course_data, chapters = await _load_course_export_data(empty_course, db)
+        course_data, chapters, challenge_secrets = await _load_course_export_data(
+            empty_course, db
+        )
 
         assert course_data["thumbnail_type"] is None
         assert chapters == []
+        assert challenge_secrets == []
 
 
 class TestBuildExportZip:
@@ -466,6 +599,7 @@ class TestBuildExportZip:
                         ],
                     ),
                 ],
+                [],
             )
         ]
 
@@ -510,6 +644,7 @@ class TestBuildExportZip:
             names = set(zf.namelist())
             assert "manifest.json" in names
             assert "courses/course-1/course.json" in names
+            assert "courses/course-1/coding-challenges.private.json" in names
             assert "courses/course-1/thumbnails/thumb.jpg" in names
             assert "courses/course-1/thumbnails/thumb.txt" in names
             assert "courses/course-1/chapters/chapter-1/chapter.json" in names
@@ -554,7 +689,9 @@ class TestBuildExportZip:
             side_effect=RuntimeError("boom"),
         ):
             with pytest.raises(RuntimeError, match="boom"):
-                _build_export_zip([("course-1", "Course 1", {}, [])], "org-1")
+                _build_export_zip(
+                    [("course-1", "Course 1", {}, [], [])], "org-1"
+                )
 
         assert not zip_path.exists()
 

@@ -4,6 +4,9 @@ import { searchMeta as home } from '@/app/orgs/[orgslug]/dash/page.search'
 import { searchMeta as courses } from '@/app/orgs/[orgslug]/dash/courses/page.search'
 import { searchMeta as coursesMigrate } from '@/app/orgs/[orgslug]/dash/courses/migrate/page.search'
 import { searchMeta as assignments } from '@/app/orgs/[orgslug]/dash/assignments/page.search'
+import { searchMeta as gradebook } from '@/app/orgs/[orgslug]/dash/gradebook/page.search'
+import { searchMeta as questionBank } from '@/app/orgs/[orgslug]/dash/question-bank/page.search'
+import { searchMeta as selfTests } from '@/app/orgs/[orgslug]/dash/self-tests/page.search'
 import { searchMeta as communities } from '@/app/orgs/[orgslug]/dash/communities/page.search'
 import { searchMeta as podcasts } from '@/app/orgs/[orgslug]/dash/podcasts/page.search'
 import { searchMeta as boards } from '@/app/orgs/[orgslug]/dash/boards/page.search'
@@ -19,6 +22,9 @@ export const dashboardPages: SearchMeta[] = [
   courses,
   coursesMigrate,
   assignments,
+  gradebook,
+  questionBank,
+  selfTests,
   communities,
   podcasts,
   boards,

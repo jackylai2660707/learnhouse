@@ -6,6 +6,7 @@ import { queryKeys } from '@/lib/query/keys'
 import { useTranslation } from 'react-i18next'
 import { useOrg } from '@components/Contexts/OrgContext'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
+import useAdminStatus from '@components/Hooks/useAdminStatus'
 import { getAPIUrl } from '@services/config/config'
 import { apiFetch } from '@services/utils/ts/requests'
 import { Users, ShieldCheck, Clock, EnvelopeSimple } from '@phosphor-icons/react'
@@ -16,13 +17,17 @@ export default function RecentMembers() {
   const session = useLHSession() as any
   const token = session?.data?.tokens?.access_token
   const orgId = org?.id
+  const { rights } = useAdminStatus()
+  const canReadUsers = rights?.users?.action_read === true
 
   const { data: membersData, isLoading } = useQuery({
     queryKey: [...queryKeys.org.users(orgId), 1, 'recent', 8],
     queryFn: () => apiFetch(`${getAPIUrl()}orgs/${orgId}/users?page=1&limit=8&sort_order=desc`, token),
-    enabled: !!token && !!orgId,
+    enabled: !!token && !!orgId && canReadUsers,
     staleTime: 60_000,
   })
+
+  if (!canReadUsers) return null
 
   const members: any[] = membersData?.items ?? []
   const totalMembers = membersData?.total ?? 0

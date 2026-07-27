@@ -1,6 +1,8 @@
 'use client'
+import Link from 'next/link'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
 import { useOrg } from '@components/Contexts/OrgContext'
+import { getUriWithOrg } from '@services/config/config'
 import TrailCourseCard from '@components/Pages/Trail/TrailCourseCard'
 import UserCertificates from '@components/Pages/Trail/UserCertificates'
 import TypeOfContentTitle from '@components/Objects/StyledElements/Titles/TypeOfContentTitle'
@@ -13,7 +15,7 @@ import { removeCourse } from '@services/courses/activity'
 import { revalidateTags } from '@services/utils/ts/requests'
 import { useRouter } from 'next/navigation'
 import ConfirmationModal from '@components/Objects/StyledElements/ConfirmationModal/ConfirmationModal'
-import { BookOpen, Signpost } from 'lucide-react'
+import { BookOpen, ClipboardList, Signpost } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import FeatureGate from '@components/Dashboard/Shared/FeatureGate/FeatureGate'
 
@@ -65,32 +67,41 @@ function Trail(params: any) {
     <FeatureGate feature="courses" orgslug={orgslug} context="public">
     <GeneralWrapperStyled>
       <div className="flex flex-col space-y-2 mb-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-3">
           <TypeOfContentTitle title={t('courses.progress')} type="tra" />
-          {trail?.runs?.length > 0 && (
-            <ConfirmationModal
-              confirmationButtonText={isQuittingAll ? t('courses.quitting_courses', { progress: quittingProgress }) : t('courses.quit_all_courses')}
-              confirmationMessage={t('courses.quit_all_courses_confirm')}
-              dialogTitle={t('courses.quit_all_courses_title')}
-              dialogTrigger={
-                <button
-                  disabled={isQuittingAll}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-colors
-                    ${isQuittingAll
-                      ? 'bg-gray-100 text-gray-500 cursor-not-allowed'
-                      : 'bg-red-50 text-red-700 hover:bg-red-100'
-                    }`}
-                >
-                  {isQuittingAll
-                    ? t('courses.quitting_courses', { progress: quittingProgress })
-                    : t('courses.quit_all_courses')
-                  }
-                </button>
-              }
-              functionToExecute={handleQuitAllCourses}
-              status="warning"
-            />
-          )}
+          <div className="flex items-center gap-2">
+            <Link
+              href={getUriWithOrg(orgslug, '/self-test')}
+              className="inline-flex items-center gap-2 rounded-lg bg-gray-950 px-3 py-2 text-sm font-bold text-white hover:bg-black"
+            >
+              <ClipboardList size={16} />
+              自我練習
+            </Link>
+            {trail?.runs?.length > 0 && (
+              <ConfirmationModal
+                confirmationButtonText={isQuittingAll ? t('courses.quitting_courses', { progress: quittingProgress }) : t('courses.quit_all_courses')}
+                confirmationMessage={t('courses.quit_all_courses_confirm')}
+                dialogTitle={t('courses.quit_all_courses_title')}
+                dialogTrigger={
+                  <button
+                    disabled={isQuittingAll}
+                    className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-colors
+                      ${isQuittingAll
+                        ? 'bg-gray-100 text-gray-500 cursor-not-allowed'
+                        : 'bg-red-50 text-red-700 hover:bg-red-100'
+                      }`}
+                  >
+                    {isQuittingAll
+                      ? t('courses.quitting_courses', { progress: quittingProgress })
+                      : t('courses.quit_all_courses')
+                    }
+                  </button>
+                }
+                functionToExecute={handleQuitAllCourses}
+                status="warning"
+              />
+            )}
+          </div>
         </div>
 
         {!trail ? (
@@ -122,6 +133,21 @@ function Trail(params: any) {
             <p className="text-md text-gray-400 mb-6 text-center max-w-xs">
               {t('user.start_course_to_see_progress')}
             </p>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Link
+                href={getUriWithOrg(orgslug, '/self-test')}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-gray-950 px-4 text-sm font-bold text-white hover:bg-black"
+              >
+                <ClipboardList size={16} />
+                先做自我練習
+              </Link>
+              <Link
+                href={getUriWithOrg(orgslug, '/courses')}
+                className="inline-flex h-10 items-center justify-center rounded-lg border border-gray-200 bg-white px-4 text-sm font-bold text-gray-700 hover:bg-gray-50"
+              >
+                瀏覽課程
+              </Link>
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">

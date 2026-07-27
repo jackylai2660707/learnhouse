@@ -12,7 +12,6 @@ import {
   Question,
   Gear,
   SignOut,
-  Package,
   SidebarSimple,
   Check,
   CaretDown,
@@ -49,7 +48,7 @@ import React, { useEffect, useState } from 'react'
 import UserAvatar from '../../Objects/UserAvatar'
 import AdminAuthorization from '@components/Security/AdminAuthorization'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
-import { getUriWithOrg, getUriWithoutOrg, getAPIUrl } from '@services/config/config'
+import { getUriWithOrg, getAPIUrl } from '@services/config/config'
 import { useTranslation } from 'react-i18next'
 import { changeLanguage } from '@/lib/i18n'
 import {
@@ -177,7 +176,7 @@ function DashLeftMenu() {
   return (
     <TooltipProvider delayDuration={0}>
     <nav
-      aria-label="Dashboard sidebar navigation"
+      aria-label={t('common.dashboard_sidebar_navigation')}
       className={cn(
         "flex flex-col text-white h-screen sticky top-0 z-overlay border-r border-white/[0.08] bg-[#0f0f10] transition-all duration-300",
         isCollapsed ? "w-[72px]" : "w-64"
@@ -201,7 +200,7 @@ function DashLeftMenu() {
           ) : (
             <img
               src="/lrn-dash.svg"
-              alt="Learnhouse logo"
+              alt={t('common.learnhouse_logo')}
               className="h-8 w-8"
             />
           )}
@@ -227,7 +226,7 @@ function DashLeftMenu() {
 
         {!isCollapsed && (
           <button
-            aria-label="Collapse sidebar"
+            aria-label={t('common.collapse_sidebar')}
             onClick={toggleCollapse}
             className="p-2 rounded-lg text-white/40 hover:text-white hover:bg-white/[0.08] transition-all"
           >
@@ -290,7 +289,7 @@ function DashLeftMenu() {
                 return (
                   <Link
                     href="/dash/courses"
-                    aria-label="Open courses menu"
+                    aria-label={t('common.open_courses_menu')}
                     aria-current={active ? 'page' : undefined}
                     className={cn(
                       "relative flex items-center w-full rounded-lg transition-all",
@@ -336,6 +335,12 @@ function DashLeftMenu() {
                       <span>{t('common.all_assignments')}</span>
                     </Link>
                   </HoverMenuItem>
+                  <HoverMenuItem asChild>
+                    <Link href="/dash/gradebook" className="flex items-center gap-2 px-3 py-2 text-sm text-white/70 hover:text-white hover:bg-white/[0.08] cursor-pointer transition-colors">
+                      <ClipboardText size={16} weight="fill" />
+                      <span>成績表</span>
+                    </Link>
+                  </HoverMenuItem>
                   {recentAssignments.length > 0 && (
                     <>
                       <HoverMenuSeparator />
@@ -364,7 +369,7 @@ function DashLeftMenu() {
                 return (
                   <Link
                     href="/dash/assignments"
-                    aria-label="Open assignments menu"
+                    aria-label={t('common.open_assignments_menu')}
                     aria-current={active ? 'page' : undefined}
                     className={cn(
                       "relative flex items-center w-full rounded-lg transition-all",
@@ -398,16 +403,23 @@ function DashLeftMenu() {
             </HoverMenu>
             </div>
             <MenuLink
+              href="/dash/gradebook"
+              icon={<ClipboardText size={20} weight="fill" />}
+              label="成績表"
+              isCollapsed={isCollapsed}
+              active={isActivePath('/dash/gradebook')}
+            />
+            <MenuLink
               href="/dash/question-bank"
               icon={<Question size={20} weight="fill" />}
-              label="Question bank"
+              label="校本題庫"
               isCollapsed={isCollapsed}
               active={isActivePath('/dash/question-bank')}
             />
             <MenuLink
               href="/dash/self-tests"
               icon={<ClipboardText size={20} weight="fill" />}
-              label="Self-tests"
+              label="自測記錄"
               isCollapsed={isCollapsed}
               active={isActivePath('/dash/self-tests')}
             />
@@ -433,7 +445,7 @@ function DashLeftMenu() {
               <MenuLink
                 href="/dash/boards"
                 icon={<ChalkboardSimple size={20} weight="fill" />}
-                label="Boards"
+                label={t('common.boards')}
                 isCollapsed={isCollapsed}
                 active={isActivePath('/dash/boards')}
               />
@@ -442,7 +454,7 @@ function DashLeftMenu() {
               <MenuLink
                 href="/dash/playgrounds"
                 icon={<Cube size={20} weight="fill" />}
-                label="Playgrounds"
+                label={t('common.playgrounds')}
                 isCollapsed={isCollapsed}
                 active={isActivePath('/dash/playgrounds')}
               />
@@ -491,7 +503,7 @@ function DashLeftMenu() {
                 return (
                   <Link
                     href="/dash/users/settings/users"
-                    aria-label="Open users menu"
+                    aria-label={t('common.open_users_menu')}
                     aria-current={active ? 'page' : undefined}
                     className={cn(
                       "relative flex items-center w-full rounded-lg transition-all",
@@ -614,7 +626,7 @@ function DashLeftMenu() {
                 return (
                   <Link
                     href="/dash/org/settings/general"
-                    aria-label="Open organization menu"
+                    aria-label={t('common.open_organization_menu')}
                     aria-current={active ? 'page' : undefined}
                     className={cn(
                       "relative flex items-center w-full rounded-lg transition-all",
@@ -651,7 +663,7 @@ function DashLeftMenu() {
             <HoverMenu
               content={
                 <HoverMenuContent className="w-64">
-                  <HoverMenuLabel className="text-white/70 font-medium">Analytics</HoverMenuLabel>
+                  <HoverMenuLabel className="text-white/70 font-medium">{t('common.analytics')}</HoverMenuLabel>
                   <HoverMenuSeparator />
                   <HoverMenuItem asChild>
                     <Link href="/dash/analytics" className="flex items-center gap-2 px-3 py-2 text-sm text-white/70 hover:text-white hover:bg-white/[0.08] cursor-pointer transition-colors">
@@ -673,7 +685,7 @@ function DashLeftMenu() {
                 return (
                   <Link
                     href="/dash/analytics"
-                    aria-label="Analytics"
+                    aria-label={t('common.analytics')}
                     aria-current={active ? 'page' : undefined}
                     className={cn(
                       "relative flex items-center w-full rounded-lg transition-all",
@@ -697,7 +709,7 @@ function DashLeftMenu() {
                     </span>
                     {!isCollapsed && (
                       <>
-                        <span className="text-sm font-medium flex-1 text-left">Analytics</span>
+                        <span className="text-sm font-medium flex-1 text-left">{t('common.analytics')}</span>
                         <CaretDown aria-hidden="true" size={14} weight="bold" className={active ? "text-white/70" : "text-white/40"} />
                       </>
                     )}
@@ -712,9 +724,9 @@ function DashLeftMenu() {
                 content={
                   <HoverMenuContent className="w-64">
                     <HoverMenuLabel className="flex items-center justify-between text-white/70 font-medium">
-                      <span>Other</span>
+                      <span>{t('common.other')}</span>
                       <span className="text-[9px] font-medium uppercase tracking-wider px-1.5 py-0.5 rounded bg-white/[0.06] text-white/25">
-                        Disabled
+                        {t('common.disabled')}
                       </span>
                     </HoverMenuLabel>
                     <HoverMenuSeparator />
@@ -746,7 +758,7 @@ function DashLeftMenu() {
                       <HoverMenuItem asChild>
                         <Link href="/dash/playgrounds" className="flex items-center gap-2 px-3 py-2 text-sm text-white/30 hover:text-white/50 hover:bg-white/[0.05] cursor-pointer transition-colors">
                           <Cube size={16} weight="fill" />
-                          <span>Playgrounds</span>
+                          <span>{t('common.playgrounds')}</span>
                         </Link>
                       </HoverMenuItem>
                     )}
@@ -762,7 +774,7 @@ function DashLeftMenu() {
                 }
               >
                 <button
-                  aria-label="Other"
+                  aria-label={t('common.other')}
                   className={cn(
                     "flex items-center w-full rounded-lg text-white/30 hover:text-white/50 hover:bg-white/[0.05] transition-all",
                     isCollapsed ? "justify-center h-10" : "px-3 py-2 gap-3"
@@ -776,7 +788,7 @@ function DashLeftMenu() {
                   </span>
                   {!isCollapsed && (
                     <>
-                      <span className="text-sm font-medium flex-1 text-left">Other</span>
+                      <span className="text-sm font-medium flex-1 text-left">{t('common.other')}</span>
                       <CaretDown aria-hidden="true" size={14} weight="bold" className="text-white/20" />
                     </>
                   )}
@@ -795,7 +807,7 @@ function DashLeftMenu() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
-                  aria-label="Expand sidebar"
+                  aria-label={t('common.expand_sidebar')}
                   onClick={toggleCollapse}
                   className="flex items-center justify-center w-full h-10 rounded-lg text-white/40 hover:text-white hover:bg-white/[0.08] transition-all"
                 >
@@ -836,7 +848,7 @@ function DashLeftMenu() {
               </HoverMenuContent>
             }
           >
-            <button aria-label="Open language menu" className={cn(
+            <button aria-label={t('common.open_language_menu')} className={cn(
               "flex items-center w-full rounded-lg text-white/50 hover:text-white hover:bg-white/[0.08] transition-all group",
               isCollapsed ? "justify-center h-10" : "px-3 py-2 gap-3"
             )}>
@@ -901,7 +913,7 @@ function DashLeftMenu() {
               </HoverMenuContent>
             }
           >
-            <button aria-label="Open help menu" className={cn(
+            <button aria-label={t('common.open_help_menu')} className={cn(
               "flex items-center w-full rounded-lg text-white/50 hover:text-white hover:bg-white/[0.08] transition-all group",
               isCollapsed ? "justify-center h-10" : "px-3 py-2 gap-3"
             )}>

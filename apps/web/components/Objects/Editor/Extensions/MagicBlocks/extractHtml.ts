@@ -15,9 +15,14 @@ export function extractHtmlDocument(raw: string | null | undefined): string {
     text = text.slice(docStart.index)
   }
 
-  const docEnd = text.match(/<\/html\s*>/i)
-  if (docEnd && docEnd.index !== undefined) {
-    text = text.slice(0, docEnd.index + docEnd[0].length)
+  const docEndPattern = /<\/html\s*>/gi
+  let lastDocEnd: RegExpExecArray | null = null
+  let docEnd: RegExpExecArray | null
+  while ((docEnd = docEndPattern.exec(text)) !== null) {
+    lastDocEnd = docEnd
+  }
+  if (lastDocEnd && lastDocEnd.index !== undefined) {
+    text = text.slice(0, lastDocEnd.index + lastDocEnd[0].length)
   }
 
   return text.trim()

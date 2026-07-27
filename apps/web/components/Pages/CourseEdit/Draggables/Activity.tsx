@@ -66,14 +66,17 @@ function Activity(props: any) {
       draggableId={String(props.activity.uuid)}
       index={props.index}
     >
-      {(provided) => (
-        <div
-          className="flex flex-row py-2 my-2 rounded-md bg-gray-50 text-gray-500 hover:bg-gray-100 hover:scale-102 hover:shadow-sm space-x-1 w-auto items-center ring-1 ring-inset ring-gray-400/10 shadow-xs transition-all delay-100 duration-75 ease-linear"
-          key={props.activity.id}
-          {...provided.draggableProps}
-          {...provided.dragHandleProps}
-          ref={provided.innerRef}
-        >
+      {(provided) => {
+        const { style, ...draggableProps } = provided.draggableProps
+        return (
+          <div
+            className="flex flex-row py-2 my-2 rounded-md bg-gray-50 text-gray-500 hover:bg-gray-100 hover:scale-102 hover:shadow-sm space-x-1 w-auto items-center ring-1 ring-inset ring-gray-400/10 shadow-xs transition-all delay-100 duration-75 ease-linear"
+            key={props.activity.id}
+            {...draggableProps}
+            {...provided.dragHandleProps}
+            ref={provided.innerRef}
+            style={style as React.CSSProperties}
+          >
           <div className="px-3 text-gray-300 space-x-1 w-28">
             {props.activity.type === 'video' && (
               <>
@@ -197,8 +200,9 @@ function Activity(props: any) {
               status="warning"
             ></ConfirmationModal>
           </div>
-        </div>
-      )}
+          </div>
+        )
+      }}
     </Draggable>
   )
 }

@@ -7,9 +7,9 @@ import Toast from '@components/Objects/StyledElements/Toast/Toast'
 import UserAvatar from '@components/Objects/UserAvatar'
 import { getAPIUrl } from '@services/config/config'
 import { getUserAvatarMediaDirectory } from '@services/media/media'
-import { removeUserFromOrg, removeUsersFromOrg, updateUserRole } from '@services/organizations/orgs'
+import { removeUserFromOrg, removeUsersFromOrg, updateUserRole, updateUsersRole } from '@services/organizations/orgs'
 import { apiFetch } from '@services/utils/ts/requests'
-import { LogOut, Search, ChevronLeft, ChevronRight, Shield, User, Crown, Users, CheckCircle2, XCircle, Mail, Globe, ArrowUp, ArrowDown, X, Filter, Download } from 'lucide-react'
+import { AlertCircle, LogOut, Search, ChevronLeft, ChevronRight, Shield, User, Crown, Users, CheckCircle2, XCircle, Mail, Globe, ArrowUp, ArrowDown, X, Filter, Download, RotateCcw } from 'lucide-react'
 import React, { useState, useCallback, useMemo } from 'react'
 import toast from 'react-hot-toast'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -36,6 +36,18 @@ function formatShortDate(dateStr: string | null | undefined): string {
   }
 }
 
+function actionErrorMessage(error: any, fallback: string) {
+  const detail = error?.data?.detail ?? error?.data?.message ?? error?.detail ?? error?.message
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => item?.msg || item?.message || '')
+      .filter(Boolean)
+      .join('；') || fallback
+  }
+  return fallback
+}
+
 function OrgUsers() {
   const { t } = useTranslation()
   const org = useOrg() as any
@@ -50,6 +62,7 @@ function OrgUsers() {
   const [filterRole, setFilterRole] = useState<string>('')
   const [filterStatus, setFilterStatus] = useState<string>('')
   const [filterGroupId, setFilterGroupId] = useState<string>('')
+  const [batchRoleUuid, setBatchRoleUuid] = useState<string>('')
 
   const buildQuery = () => {
     const params = new URLSearchParams()
@@ -72,7 +85,12 @@ function OrgUsers() {
     [org?.id, page, sortOrder, searchValue, filterRole, filterStatus, filterGroupId]
   )
 
-  const { data, isFetching } = useQuery({
+  const {
+    data,
+    error: usersError,
+    isFetching,
+    refetch: refetchUsers,
+  } = useQuery({
     queryKey: usersQueryKey,
     queryFn: () => apiFetch(`${getAPIUrl()}orgs/${org?.id}/users?${buildQuery()}`, access_token),
     enabled: !!org?.id && !!access_token,
@@ -106,6 +124,13 @@ function OrgUsers() {
 
   const hasActiveFilters = filterRole || filterStatus || filterGroupId
 
+  function refreshUserRosterEvidence(orgId: number) {
+    queryClient.invalidateQueries({ queryKey: queryKeys.org.users(orgId) })
+    queryClient.invalidateQueries({ queryKey: queryKeys.usergroups.list(orgId) })
+    queryClient.invalidateQueries({ queryKey: queryKeys.assignments.workbench(orgId) })
+    queryClient.invalidateQueries({ queryKey: queryKeys.assignments.gradebookAll(orgId) })
+  }
+
   const toggleSelectAll = useCallback(() => {
     setSelectedUserIds((prev) => {
       const next = new Set(prev)
@@ -134,6 +159,7 @@ function OrgUsers() {
     setSortOrder((prev) => prev === 'desc' ? 'asc' : 'desc')
     setPage(1)
     setSelectedUserIds(new Set())
+    setBatchRoleUuid('')
   }
 
   const resetFilters = () => {
@@ -142,58 +168,96 @@ function OrgUsers() {
     setFilterGroupId('')
     setPage(1)
     setSelectedUserIds(new Set())
+    setBatchRoleUuid('')
   }
 
   const handleRoleChange = async (user_id: any, newRoleUuid: string) => {
     const toastId = toast.loading(t('dashboard.users.active_users.actions.updating_role') || 'Updating role...');
-    const res = await updateUserRole(org.id, user_id, newRoleUuid, access_token)
-    if (res.status === 200) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.org.users(org.id) })
-      toast.success(t('dashboard.users.active_users.actions.role_update_success') || 'Role updated successfully', {id:toastId});
-    } else {
-      toast.error(t('dashboard.users.active_users.actions.role_update_error') || 'Error updating role', {id:toastId});
+    try {
+      const res = await updateUserRole(org.id, user_id, newRoleUuid, access_token)
+      if (res.status === 200) {
+        refreshUserRosterEvidence(org.id)
+        toast.success(t('dashboard.users.active_users.actions.role_update_success') || 'Role updated successfully', {id:toastId});
+      } else {
+        toast.error(actionErrorMessage(res, t('dashboard.users.active_users.actions.role_update_error') || '更新角色失敗，請稍後再試。'), {id:toastId});
+      }
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '更新角色失敗，請確認網絡正常，稍後再試。'), {id:toastId});
     }
   }
 
   const handleRemoveUser = async (user_id: any) => {
     const toastId = toast.loading(t('dashboard.users.active_users.actions.removing'));
-    const res = await removeUserFromOrg(org.id, user_id, access_token)
-    if (res.status === 200) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.org.users(org.id) })
-      toast.success(t('dashboard.users.active_users.actions.remove_success'), {id:toastId});
-    } else {
-      toast.error(t('dashboard.users.active_users.actions.remove_error'), {id:toastId});
+    try {
+      const res = await removeUserFromOrg(org.id, user_id, access_token)
+      if (res.status === 200) {
+        refreshUserRosterEvidence(org.id)
+        toast.success(t('dashboard.users.active_users.actions.remove_success'), {id:toastId});
+      } else {
+        toast.error(actionErrorMessage(res, t('dashboard.users.active_users.actions.remove_error') || '移除使用者失敗，請稍後再試。'), {id:toastId});
+      }
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '移除使用者失敗，請確認網絡正常，稍後再試。'), {id:toastId});
     }
   }
 
   const handleBatchRemove = async () => {
     const ids = Array.from(selectedUserIds)
     const toastId = toast.loading(`Removing ${ids.length} user(s)...`);
-    const res = await removeUsersFromOrg(org.id, ids, access_token)
-    if (res.status === 200) {
-      setSelectedUserIds(new Set())
-      queryClient.invalidateQueries({ queryKey: queryKeys.org.users(org.id) })
-      toast.success(`${ids.length} user(s) removed successfully`, {id:toastId});
-    } else {
-      toast.error('Error removing users', {id:toastId});
+    try {
+      const res = await removeUsersFromOrg(org.id, ids, access_token)
+      if (res.status === 200) {
+        setSelectedUserIds(new Set())
+        setBatchRoleUuid('')
+        refreshUserRosterEvidence(org.id)
+        toast.success(`${ids.length} user(s) removed successfully`, {id:toastId});
+      } else {
+        toast.error(actionErrorMessage(res, '批量移除使用者失敗，請稍後再試。'), {id:toastId});
+      }
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '批量移除使用者失敗，請確認網絡正常，稍後再試。'), {id:toastId});
+    }
+  }
+
+  const handleBatchRoleUpdate = async () => {
+    if (!batchRoleUuid) return
+
+    const ids = Array.from(selectedUserIds)
+    const toastId = toast.loading(`Updating ${ids.length} user role(s)...`);
+    try {
+      const res = await updateUsersRole(org.id, ids, batchRoleUuid, access_token)
+
+      if (res.status === 200) {
+        setSelectedUserIds(new Set())
+        setBatchRoleUuid('')
+        refreshUserRosterEvidence(org.id)
+        toast.success(`${res.data?.updated_count ?? ids.length} user role(s) updated`, {id:toastId});
+      } else {
+        toast.error(actionErrorMessage(res, '批量更新角色失敗，請稍後再試。'), {id:toastId});
+      }
+    } catch (error) {
+      toast.error(actionErrorMessage(error, '批量更新角色失敗，請確認網絡正常，稍後再試。'), {id:toastId});
     }
   }
 
   const handlePageChange = (newPage: number) => {
     setPage(newPage)
     setSelectedUserIds(new Set())
+    setBatchRoleUuid('')
   }
 
   const handleSearchChange = (value: string) => {
     setSearchValue(value)
     setPage(1)
     setSelectedUserIds(new Set())
+    setBatchRoleUuid('')
   }
 
   const handleFilterChange = (setter: React.Dispatch<React.SetStateAction<string>>) => (value: string) => {
     setter(value === 'all' ? '' : value)
     setPage(1)
     setSelectedUserIds(new Set())
+    setBatchRoleUuid('')
   }
 
   const [isExporting, setIsExporting] = useState(false)
@@ -341,13 +405,45 @@ function OrgUsers() {
 
             {/* Selection Action Bar */}
             {selectedUserIds.size > 0 && (
-              <div className="flex items-center justify-between px-6 py-3 bg-indigo-50 border-b border-indigo-100">
+              <div className="flex flex-col gap-3 px-6 py-3 bg-indigo-50 border-b border-indigo-100 lg:flex-row lg:items-center lg:justify-between">
                 <span className="text-sm font-medium text-indigo-700">
                   {selectedUserIds.size} user{selectedUserIds.size !== 1 ? 's' : ''} selected
                 </span>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Select value={batchRoleUuid} onValueChange={setBatchRoleUuid} disabled={!roles}>
+                    <SelectTrigger className="h-8 w-[180px] bg-white text-xs border-indigo-100">
+                      <SelectValue placeholder="選擇批量角色" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {roles?.map((role: any) => (
+                        <SelectItem key={role.id} value={role.role_uuid}>
+                          <div className="flex items-center gap-2">
+                            {role.name.toLowerCase().includes('admin') ? (
+                              <Crown className="w-3.5 h-3.5 text-indigo-600" />
+                            ) : role.name.toLowerCase().includes('teacher') || role.name.toLowerCase().includes('instructor') ? (
+                              <Shield className="w-3.5 h-3.5 text-emerald-600" />
+                            ) : (
+                              <User className="w-3.5 h-3.5 text-gray-500" />
+                            )}
+                            <span>{role.name}</span>
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <button
-                    onClick={() => setSelectedUserIds(new Set())}
+                    onClick={handleBatchRoleUpdate}
+                    disabled={!batchRoleUuid}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded-md text-xs font-medium transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <Shield className="w-3.5 h-3.5" />
+                    <span>套用角色</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSelectedUserIds(new Set())
+                      setBatchRoleUuid('')
+                    }}
                     className="text-xs text-indigo-600 hover:text-indigo-800 font-medium px-3 py-1.5 rounded-md hover:bg-indigo-100 transition-all"
                   >
                     Clear selection
@@ -371,7 +467,28 @@ function OrgUsers() {
 
             {/* Content */}
             <div className="overflow-x-auto relative">
-              {isInitialLoading ? (
+              {usersError ? (
+                <div className="px-6 py-10">
+                  <div className="mx-auto max-w-lg rounded-xl border border-amber-200 bg-amber-50 px-5 py-5 text-center">
+                    <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-lg bg-white text-amber-700 nice-shadow">
+                      <AlertCircle size={20} />
+                    </div>
+                    <p className="mt-3 text-sm font-black text-amber-900">使用者列表載入失敗</p>
+                    <p className="mt-1 text-xs font-semibold leading-relaxed text-amber-800">
+                      {(usersError as Error)?.message || '請重新載入使用者；如果仍然失敗，請稍後再試。'}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => refetchUsers()}
+                      disabled={isFetching}
+                      className="mt-4 inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-white px-3 text-xs font-black text-amber-900 ring-1 ring-inset ring-amber-200 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <RotateCcw size={14} className={isFetching ? 'animate-spin' : ''} />
+                      {isFetching ? '重新載入中' : '重新載入使用者'}
+                    </button>
+                  </div>
+                </div>
+              ) : isInitialLoading ? (
                 <div className="animate-pulse px-6 py-4 space-y-0">
                   {/* Table header skeleton */}
                   <div className="flex items-center gap-4 py-3 border-b border-gray-100 mb-1">

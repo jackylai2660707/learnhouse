@@ -292,14 +292,17 @@ export default function MigrationTreeEditor({
                     draggableId={`chapter-${chapterIndex}`}
                     index={chapterIndex}
                   >
-                    {(provided, snapshot) => (
-                      <div
-                        ref={provided.innerRef}
-                        {...provided.draggableProps}
-                        className={`border rounded-lg ${
-                          snapshot.isDragging ? 'shadow-lg' : ''
-                        }`}
-                      >
+                    {(provided, snapshot) => {
+                      const { style, ...draggableProps } = provided.draggableProps
+                      return (
+                        <div
+                          ref={provided.innerRef}
+                          {...draggableProps}
+                          style={style as React.CSSProperties}
+                          className={`border rounded-lg ${
+                            snapshot.isDragging ? 'shadow-lg' : ''
+                          }`}
+                        >
                         {/* Chapter header */}
                         <div className="flex items-center space-x-2 p-3 bg-gray-50 rounded-t-lg">
                           <div {...provided.dragHandleProps}>
@@ -363,16 +366,19 @@ export default function MigrationTreeEditor({
                                         draggableId={`activity-${chapterIndex}-${actIndex}`}
                                         index={actIndex}
                                       >
-                                        {(provided, snapshot) => (
-                                          <div
-                                            ref={provided.innerRef}
-                                            {...provided.draggableProps}
-                                            className={`border rounded-md p-2 ${
-                                              snapshot.isDragging
-                                                ? 'shadow-md bg-blue-50'
-                                                : 'bg-white'
-                                            }`}
-                                          >
+                                        {(provided, snapshot) => {
+                                          const { style, ...draggableProps } = provided.draggableProps
+                                          return (
+                                            <div
+                                              ref={provided.innerRef}
+                                              {...draggableProps}
+                                              style={style as React.CSSProperties}
+                                              className={`border rounded-md p-2 ${
+                                                snapshot.isDragging
+                                                  ? 'shadow-md bg-blue-50'
+                                                  : 'bg-white'
+                                              }`}
+                                            >
                                             <div className="flex items-center space-x-2">
                                               <div
                                                 {...provided.dragHandleProps}
@@ -472,8 +478,9 @@ export default function MigrationTreeEditor({
                                                 </div>
                                               )}
                                             </Droppable>
-                                          </div>
-                                        )}
+                                            </div>
+                                          )
+                                        }}
                                       </Draggable>
                                     )
                                   )}
@@ -490,8 +497,9 @@ export default function MigrationTreeEditor({
                             </button>
                           </div>
                         )}
-                      </div>
-                    )}
+                        </div>
+                      )
+                    }}
                   </Draggable>
                 ))}
                 {provided.placeholder}

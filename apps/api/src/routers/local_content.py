@@ -57,6 +57,11 @@ def _validate_content_path(file_path: str) -> Path | None:
     return Path(full_real)
 
 
+def _canonical_relative_path(resolved: Path) -> str:
+    """Return the already-decoded path used for both ACL and file lookup."""
+    return resolved.relative_to(Path(os.path.realpath(str(CONTENT_DIR)))).as_posix()
+
+
 async def _check_content_access(
     file_path: str,
     current_user: PublicUser | AnonymousUser | APITokenUser,
@@ -72,6 +77,11 @@ async def _check_content_access(
     - orgs/{uuid}/...                                  → org-level (public)
     """
     parts = file_path.split('/')
+
+    # Worker staging is never a content-delivery resource. Conceal its
+    # existence even from authenticated organization members.
+    if parts and parts[0] == '_internal':
+        raise HTTPException(status_code=404, detail="File not found")
 
     # Activity content: requires course to be public or user to be org member
     if (
@@ -206,7 +216,9 @@ async def serve_local_content(
     if resolved is None:
         raise HTTPException(status_code=400, detail="Invalid path")
 
-    await _check_content_access(file_path, current_user, db_session)
+    await _check_content_access(
+        _canonical_relative_path(resolved), current_user, db_session
+    )
 
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")
@@ -247,7 +259,9 @@ async def head_local_content(
     if resolved is None:
         raise HTTPException(status_code=400, detail="Invalid path")
 
-    await _check_content_access(file_path, current_user, db_session)
+    await _check_content_access(
+        _canonical_relative_path(resolved), current_user, db_session
+    )
 
     if not resolved.is_file():
         raise HTTPException(status_code=404, detail="File not found")

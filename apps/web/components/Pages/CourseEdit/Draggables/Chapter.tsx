@@ -49,14 +49,17 @@ function Chapter(props: any) {
       draggableId={String(props.info.list.chapter.uuid)}
       index={props.index}
     >
-      {(provided, snapshot) => (
-        <div
-          {...provided.dragHandleProps}
-          {...provided.draggableProps}
-          ref={provided.innerRef}
-          className="max-w-(--breakpoint-2xl) mx-auto bg-white px-5 mb-5 p-3 text-[15px] block rounded-[9px] border border-white/20 shadow-md transition-all duration-200"
-          key={props.info.list.chapter.id}
-        >
+      {(provided, snapshot) => {
+        const { style, ...draggableProps } = provided.draggableProps
+        return (
+          <div
+            {...provided.dragHandleProps}
+            {...draggableProps}
+            ref={provided.innerRef}
+            style={style as React.CSSProperties}
+            className="max-w-(--breakpoint-2xl) mx-auto bg-white px-5 mb-5 p-3 text-[15px] block rounded-[9px] border border-white/20 shadow-md transition-all duration-200"
+            key={props.info.list.chapter.id}
+          >
           <div className="flex pt-3 pr-3 font-bold text-md items-center space-x-2">
             <div className="flex grow text-lg space-x-3 items-center rounded-md px-3 py-1">
               <div className="bg-neutral-100 rounded-md p-2">
@@ -172,8 +175,9 @@ function Chapter(props: any) {
               </div>
             )}
           </Droppable>
-        </div>
-      )}
+          </div>
+        )
+      }}
     </Draggable>
   )
 }

@@ -84,19 +84,19 @@ function DashMobileMenu() {
     <>
       {/* Floating pill */}
       <nav
-        aria-label="Dashboard mobile navigation"
-        className="fixed inset-x-0 mx-auto w-fit z-[9999]"
+        aria-label="流動版儀表板導覽"
+        className="pointer-events-none fixed right-3 z-[9999] w-fit max-w-[calc(100vw-1.5rem)]"
         style={{ bottom: 'calc(env(safe-area-inset-bottom) + 1.5rem)' }}
       >
         <div
-          className="flex items-center gap-0.5 px-1.5 py-1.5 bg-[#111113]/90 backdrop-blur-xl rounded-full"
+          className="pointer-events-auto flex items-center gap-0.5 px-1.5 py-1.5 bg-[#111113]/90 backdrop-blur-xl rounded-full"
           style={{ boxShadow: '0 4px 16px rgba(0,0,0,0.3)' }}
         >
           {/* LearnHouse logo — links to home */}
           <Link
             href="/dash"
             className="flex items-center justify-center px-2.5 py-2.5 rounded-full transition-all duration-200"
-            aria-label="Home"
+            aria-label="首頁"
           >
             <img
               src="/lrn-dash.svg"
@@ -105,35 +105,21 @@ function DashMobileMenu() {
               style={{ filter: 'brightness(0) invert(1)' }}
             />
           </Link>
-          {/* Progressive reveal — more icons as viewport widens */}
-          <PillLink href="/dash/courses" icon={<BookOpen size={18} weight="fill" />} active={isActive('/dash/courses')} className="hidden min-[340px]:flex" />
+          {/* School pilot shortcuts: keep the floating bar focused on daily school use. */}
+          <PillLink href="/dash/courses" icon={<BookOpen size={18} weight="fill" />} active={isActive('/dash/courses')} className="hidden min-[380px]:flex" />
           <PillLink href="/dash/assignments" icon={<Files size={18} weight="fill" />} active={isActive('/dash/assignments')} className="hidden min-[390px]:flex" />
-          <PillLink href="/dash/question-bank" icon={<Question size={18} weight="fill" />} active={isActive('/dash/question-bank')} className="hidden min-[410px]:flex" />
-          <PillLink href="/dash/users/settings/users" icon={<Users size={18} weight="fill" />} active={isActive('/dash/users')} className="hidden min-[430px]:flex" />
-          {isEnabled('communities') && (
-            <PillLink href="/dash/communities" icon={<ChatsCircle size={18} weight="fill" />} active={isActive('/dash/communities')} className="hidden min-[470px]:flex" />
-          )}
-          {isEnabled('podcasts') && (
-            <PillLink href="/dash/podcasts" icon={<Headphones size={18} weight="fill" />} active={isActive('/dash/podcasts')} className="hidden min-[510px]:flex" />
-          )}
-          {isEnabled('boards') && (
-            <PillLink href="/dash/boards" icon={<ChalkboardSimple size={18} weight="fill" />} active={isActive('/dash/boards')} className="hidden min-[550px]:flex" />
-          )}
-          {isEnabled('playgrounds') && (
-            <PillLink href="/dash/playgrounds" icon={<Cube size={18} weight="fill" />} active={isActive('/dash/playgrounds')} className="hidden min-[590px]:flex" />
-          )}
-          <PillLink href="/dash/analytics" icon={<ChartBar size={18} weight="fill" />} active={isActive('/dash/analytics')} className="hidden min-[630px]:flex" />
-          <PillLink href="/dash/org/settings/general" icon={<Buildings size={18} weight="fill" />} active={isActive('/dash/org')} className="hidden min-[670px]:flex" />
-          {isEnabled('payments') && (
-            <PillLink href="/dash/payments/overview" icon={<CurrencyCircleDollar size={18} weight="fill" />} active={isActive('/dash/payments')} className="hidden min-[710px]:flex" />
-          )}
+          <PillLink href="/dash/gradebook" icon={<ClipboardText size={18} weight="fill" />} active={isActive('/dash/gradebook')} className="hidden min-[410px]:flex" />
+          <PillLink href="/dash/question-bank" icon={<Question size={18} weight="fill" />} active={isActive('/dash/question-bank')} className="hidden min-[450px]:flex" />
+          <PillLink href="/dash/self-tests" icon={<ClipboardText size={18} weight="fill" />} active={isActive('/dash/self-tests')} className="hidden min-[490px]:flex" />
+          <PillLink href="/dash/users/settings/users" icon={<Users size={18} weight="fill" />} active={isActive('/dash/users')} className="hidden min-[530px]:flex" />
 
           <span className="w-px h-4 bg-white/[0.15] mx-1 shrink-0" />
 
           {/* Search */}
           <button
+            type="button"
             onClick={openSearch}
-            aria-label="Search"
+            aria-label="搜尋"
             className="p-2.5 rounded-full transition-all duration-200 text-white/60 hover:text-white hover:bg-white/[0.1]"
           >
             <MagnifyingGlass size={18} weight="bold" />
@@ -141,8 +127,9 @@ function DashMobileMenu() {
 
           {/* Menu toggle */}
           <button
+            type="button"
             onClick={() => setMenuOpen(v => !v)}
-            aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+            aria-label={menuOpen ? '關閉選單' : '開啟選單'}
             aria-expanded={menuOpen}
             className={cn(
               'p-2.5 rounded-full transition-all duration-200 overflow-hidden',
@@ -220,15 +207,16 @@ function DashMobileMenu() {
                 <PanelItem href="/dash" icon={<House size={15} weight="fill" />} label={t('common.home')} active={isActive('/dash')} onClick={close} />
                 <PanelItem href="/dash/courses" icon={<BookOpen size={15} weight="fill" />} label={t('courses.courses')} active={isActive('/dash/courses')} onClick={close} />
                 <PanelItem href="/dash/assignments" icon={<Files size={15} weight="fill" />} label={t('common.assignments')} active={isActive('/dash/assignments')} onClick={close} />
-                <PanelItem href="/dash/question-bank" icon={<Question size={15} weight="fill" />} label="Question bank" active={isActive('/dash/question-bank')} onClick={close} />
-                <PanelItem href="/dash/self-tests" icon={<ClipboardText size={15} weight="fill" />} label="Self-tests" active={isActive('/dash/self-tests')} onClick={close} />
+                <PanelItem href="/dash/gradebook" icon={<ClipboardText size={15} weight="fill" />} label="成績表" active={isActive('/dash/gradebook')} onClick={close} />
+                <PanelItem href="/dash/question-bank" icon={<Question size={15} weight="fill" />} label="校本題庫" active={isActive('/dash/question-bank')} onClick={close} />
+                <PanelItem href="/dash/self-tests" icon={<ClipboardText size={15} weight="fill" />} label="自測記錄" active={isActive('/dash/self-tests')} onClick={close} />
                 <PanelItem href="/dash/users/settings/users" icon={<Users size={15} weight="fill" />} label={t('common.users')} active={isActive('/dash/users')} onClick={close} />
                 {isEnabled('communities') && <PanelItem href="/dash/communities" icon={<ChatsCircle size={15} weight="fill" />} label={t('communities.title')} active={isActive('/dash/communities')} onClick={close} />}
                 {isEnabled('podcasts') && <PanelItem href="/dash/podcasts" icon={<Headphones size={15} weight="fill" />} label={t('podcasts.podcasts')} active={isActive('/dash/podcasts')} onClick={close} />}
-                {isEnabled('boards') && <PanelItem href="/dash/boards" icon={<ChalkboardSimple size={15} weight="fill" />} label="Boards" active={isActive('/dash/boards')} onClick={close} />}
-                {isEnabled('playgrounds') && <PanelItem href="/dash/playgrounds" icon={<Cube size={15} weight="fill" />} label="Playgrounds" active={isActive('/dash/playgrounds')} onClick={close} />}
+                {isEnabled('boards') && <PanelItem href="/dash/boards" icon={<ChalkboardSimple size={15} weight="fill" />} label="看板" active={isActive('/dash/boards')} onClick={close} />}
+                {isEnabled('playgrounds') && <PanelItem href="/dash/playgrounds" icon={<Cube size={15} weight="fill" />} label="互動練習場" active={isActive('/dash/playgrounds')} onClick={close} />}
                 {isEnabled('payments') && <PanelItem href="/dash/payments/overview" icon={<CurrencyCircleDollar size={15} weight="fill" />} label={t('common.payments')} active={isActive('/dash/payments')} onClick={close} />}
-                <PanelItem href="/dash/analytics" icon={<ChartBar size={15} weight="fill" />} label="Analytics" active={isActive('/dash/analytics')} onClick={close} />
+                <PanelItem href="/dash/analytics" icon={<ChartBar size={15} weight="fill" />} label="分析" active={isActive('/dash/analytics')} onClick={close} />
                 <PanelItem href="/dash/org/settings/general" icon={<Buildings size={15} weight="fill" />} label={t('common.organization')} active={isActive('/dash/org')} onClick={close} />
 
                 <div className="h-px bg-white/[0.05] mx-2 my-1.5" />

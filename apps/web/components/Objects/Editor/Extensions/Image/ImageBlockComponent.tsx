@@ -112,7 +112,7 @@ function ImageBlockComponent(props: any) {
       setAiPrompt('')
       toast.success('Image generated')
     } catch (err: any) {
-      const errorMessage = err?.message || 'Failed to generate image. Please try again.'
+      const errorMessage = err?.message || 'AI 生圖暫時不可用，請稍後重試或手動上傳圖片。'
       setError(errorMessage)
       toast.error(errorMessage)
     } finally {

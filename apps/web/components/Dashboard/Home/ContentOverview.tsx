@@ -13,6 +13,7 @@ import {
 import { useTranslation } from 'react-i18next'
 import { useOrg } from '@components/Contexts/OrgContext'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
+import useAdminStatus from '@components/Hooks/useAdminStatus'
 import { apiFetch } from '@services/utils/ts/requests'
 import { getAPIUrl } from '@services/config/config'
 import { getCommunities } from '@services/communities/communities'
@@ -27,6 +28,8 @@ export default function ContentOverview() {
   const token = session?.data?.tokens?.access_token
   const orgslug = org?.slug
   const orgId = org?.id
+  const { rights } = useAdminStatus()
+  const canReadUsers = rights?.users?.action_read === true
   const rf = org?.config?.config?.resolved_features
   const features = org?.config?.config?.features
   const isEnabled = (feature: string, defaultDisabled = false) => {
@@ -47,7 +50,7 @@ export default function ContentOverview() {
   const { data: membersData, isLoading: membersLoading } = useQuery({
     queryKey: [...queryKeys.org.users(orgId), 'overview'],
     queryFn: () => apiFetch(`${getAPIUrl()}orgs/${orgId}/users?page=1&limit=1`, token),
-    enabled: !!token && !!orgId,
+    enabled: !!token && !!orgId && canReadUsers,
     staleTime: 60_000,
   })
 
@@ -96,7 +99,7 @@ export default function ContentOverview() {
       iconColor: 'text-blue-500',
       iconBg: 'bg-blue-50',
       href: '/dash/courses',
-      show: true,
+      show: canReadUsers,
     },
     {
       label: t('dashboard.home.members'),
@@ -141,7 +144,7 @@ export default function ContentOverview() {
   ]
 
   const visibleCards = cards.filter((c) => c.show)
-  const isLoading = coursesLoading || membersLoading
+  const isLoading = coursesLoading || (canReadUsers && membersLoading)
 
   if (isLoading) {
     return (

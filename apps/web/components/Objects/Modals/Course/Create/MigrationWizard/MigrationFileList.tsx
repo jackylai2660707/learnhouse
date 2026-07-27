@@ -49,24 +49,28 @@ export default function MigrationFileList({
                 draggableId={`file-${file.file_id}`}
                 index={index}
               >
-                {(provided, snapshot) => (
-                  <div
-                    ref={provided.innerRef}
-                    {...provided.draggableProps}
-                    {...provided.dragHandleProps}
-                    className={`flex items-center space-x-2 px-2 py-1.5 rounded-md text-sm ${
-                      snapshot.isDragging
-                        ? 'bg-blue-50 shadow-md'
-                        : 'hover:bg-gray-50'
-                    }`}
-                  >
+                {(provided, snapshot) => {
+                  const { style, ...draggableProps } = provided.draggableProps
+                  return (
+                    <div
+                      ref={provided.innerRef}
+                      {...draggableProps}
+                      {...provided.dragHandleProps}
+                      style={style as React.CSSProperties}
+                      className={`flex items-center space-x-2 px-2 py-1.5 rounded-md text-sm ${
+                        snapshot.isDragging
+                          ? 'bg-blue-50 shadow-md'
+                          : 'hover:bg-gray-50'
+                      }`}
+                    >
                     <GripVertical size={12} className="text-gray-300" />
                     {getFileIcon(file.extension)}
                     <span className="truncate text-gray-700">
                       {file.filename}
                     </span>
-                  </div>
-                )}
+                    </div>
+                  )
+                }}
               </Draggable>
             ))}
             {provided.placeholder}

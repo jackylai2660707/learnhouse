@@ -113,6 +113,11 @@ async def _check_content_access(
     """
     parts = file_path.split('/')
 
+    # Background-job staging must not be reachable through the public content
+    # router, including by authenticated organization members.
+    if parts and parts[0] == '_internal':
+        raise HTTPException(status_code=404, detail="File not found")
+
     # Activity content: requires course to be public or user to be org member
     if (
         len(parts) >= 6

@@ -698,16 +698,19 @@ export default function OrgEditBranding() {
                                 draggableId={preview.id}
                                 index={index}
                               >
-                                {(provided, snapshot) => (
-                                  <div
-                                    ref={provided.innerRef}
-                                    {...provided.draggableProps}
-                                    className={cn(
-                                      "relative group shrink-0",
-                                      "w-48",
-                                      snapshot.isDragging ? "scale-105 z-drag-overlay" : "hover:scale-102",
-                                    )}
-                                  >
+                                {(provided, snapshot) => {
+                                  const { style, ...draggableProps } = provided.draggableProps
+                                  return (
+                                    <div
+                                      ref={provided.innerRef}
+                                      {...draggableProps}
+                                      style={style as React.CSSProperties}
+                                      className={cn(
+                                        "relative group shrink-0",
+                                        "w-48",
+                                        snapshot.isDragging ? "scale-105 z-drag-overlay" : "hover:scale-102",
+                                      )}
+                                    >
                                     <button
                                       onClick={() => removePreview(preview.id)}
                                       className={cn(
@@ -759,8 +762,9 @@ export default function OrgEditBranding() {
                                         </div>
                                       </div>
                                     )}
-                                  </div>
-                                )}
+                                    </div>
+                                  )
+                                }}
                               </Draggable>
                             ))}
                             {provided.placeholder}

@@ -8,17 +8,29 @@ import zipfile
 from io import BytesIO
 from itertools import count
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import UUID
 
 import pytest
 from fastapi import HTTPException, UploadFile
 from sqlmodel import select
 
+from src.db.coding_challenges import (
+    CodingChallenge,
+    CodingChallengeTest,
+    CodingChallengeTestVisibility,
+)
 from src.db.courses.activities import ActivityTypeEnum
 from src.db.courses.courses import Course, ThumbnailType
 from src.db.resource_authors import ResourceAuthor, ResourceAuthorshipEnum
 from src.db.users import APITokenUser
+from src.services.coding_challenges.challenges import (
+    sync_coding_challenges_for_activity,
+)
+from src.services.courses.transfer.export_service import (
+    _build_export_zip,
+    _load_course_export_data,
+)
 from src.services.courses.transfer.import_service import (
     _get_block_type_folder,
     _import_activity,
@@ -552,13 +564,13 @@ class TestImportHelpers:
         }
         (temp_dir / "manifest.json").write_text(json.dumps(manifest))
         _set_import_temp_dir(monkeypatch, tmp_path)
+        org_id = org.id
 
         import_side_effect = [
             SimpleNamespace(course_uuid="course-new-1", name="Imported One"),
             RuntimeError("boom"),
         ]
         new_uuid_sequence = iter([UUID(int=1), UUID(int=2)])
-
         with patch(
             "src.services.courses.transfer.import_service.check_resource_access",
             new_callable=AsyncMock,
@@ -594,9 +606,92 @@ class TestImportHelpers:
         assert result.courses[2].success is False
         assert "boom" in result.courses[2].error
         assert check_limits.call_count == 2
-        increase_usage.assert_called_once_with("courses", org.id, db)
+        increase_usage.assert_called_once_with("courses", org_id, db)
         delete_storage_directory.assert_called_once()
         assert not os.path.exists(tmp_path / f"{temp_id}-importing")
+
+    @pytest.mark.asyncio
+    async def test_import_courses_savepoints_commit_success_and_rollback_failed_course(
+        self,
+        db,
+        org,
+        admin_user,
+        mock_request,
+        tmp_path,
+        monkeypatch,
+    ):
+        """A failed import must not discard an earlier committed course."""
+        temp_id = "temp-savepoint-semantics"
+        temp_dir = tmp_path / temp_id / "extracted"
+        temp_dir.mkdir(parents=True)
+        (temp_dir / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "format": "learnhouse-course-export",
+                    "courses": [
+                        {"course_uuid": "course-success", "path": "course-success"},
+                        {"course_uuid": "course-failure", "path": "course-failure"},
+                    ],
+                }
+            )
+        )
+        _set_import_temp_dir(monkeypatch, tmp_path)
+        org_id = org.id
+        new_uuid_sequence = iter([UUID(int=31), UUID(int=32)])
+
+        async def import_with_persisted_write(**kwargs):
+            new_course = Course(
+                name=kwargs["new_course_uuid"],
+                description="savepoint test",
+                public=False,
+                published=False,
+                open_to_contributors=False,
+                org_id=kwargs["organization"].id,
+                course_uuid=kwargs["new_course_uuid"],
+                creation_date="2024-01-01",
+                update_date="2024-01-01",
+            )
+            kwargs["db_session"].add(new_course)
+            await kwargs["db_session"].flush()
+            if kwargs["course_path"].endswith("course-failure"):
+                raise RuntimeError("original import failure")
+            return new_course
+
+        with patch(
+            "src.services.courses.transfer.import_service.check_resource_access",
+            new_callable=AsyncMock,
+        ), patch(
+            "src.services.courses.transfer.import_service.check_limits_with_usage"
+        ), patch(
+            "src.services.courses.transfer.import_service.increase_feature_usage"
+        ), patch(
+            "src.services.courses.transfer.import_service.delete_storage_directory"
+        ) as delete_storage_directory, patch(
+            "src.services.courses.transfer.import_service._import_single_course",
+            side_effect=import_with_persisted_write,
+        ), patch(
+            "src.services.courses.transfer.import_service.uuid4",
+            side_effect=lambda: next(new_uuid_sequence),
+        ):
+            result = await import_courses(
+                mock_request,
+                temp_id,
+                org.id,
+                ImportOptions(course_uuids=["course-success", "course-failure"]),
+                admin_user,
+                db,
+            )
+
+        persisted_courses = (
+            await db.exec(select(Course).where(Course.org_id == org_id))
+        ).all()
+        assert result.successful == 1
+        assert result.failed == 1
+        assert result.courses[0].success is True
+        assert result.courses[1].error == "original import failure"
+        assert len(persisted_courses) == 1
+        assert persisted_courses[0].course_uuid == result.courses[0].new_uuid
+        delete_storage_directory.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_import_courses_handles_missing_org_and_path_errors(
@@ -970,6 +1065,7 @@ class TestImportHelpers:
             "file_id": ("old-file", "file-new"),
         }
         mock_db_session = AsyncMock()
+        mock_db_session.add = Mock()
 
         with patch(
             "src.services.courses.transfer.import_service._import_block",
@@ -978,6 +1074,10 @@ class TestImportHelpers:
         ), patch(
             "src.services.courses.transfer.import_service.is_s3_enabled",
             return_value=False,
+        ), patch(
+            "src.services.courses.transfer.import_service.sync_coding_challenges_for_activity",
+            new_callable=AsyncMock,
+            side_effect=lambda activity, imported_course, content, session: content,
         ):
             activity = await _import_activity(
                 activity_path=str(activity_path),
@@ -1029,6 +1129,7 @@ class TestImportHelpers:
         )
 
         mock_db_session = AsyncMock()
+        mock_db_session.add = Mock()
         original_json_loads = json.loads
 
         async def _fake_import_block(**kwargs):
@@ -1052,6 +1153,10 @@ class TestImportHelpers:
         ), patch(
             "src.services.courses.transfer.import_service.is_s3_enabled",
             return_value=False,
+        ), patch(
+            "src.services.courses.transfer.import_service.sync_coding_challenges_for_activity",
+            new_callable=AsyncMock,
+            side_effect=lambda activity, imported_course, content, session: content,
         ):
             activity = await _import_activity(
                 activity_path=str(activity_path),
@@ -1081,6 +1186,202 @@ class TestImportHelpers:
             "activity_uuid": "old-activity",
         }
         assert (tmp_path / "content/orgs/org_test/courses/course_new/activities").exists()
+
+    @pytest.mark.asyncio
+    async def test_import_activity_remaps_and_persists_coding_challenge_secrets(
+        self,
+        db,
+        org,
+        course,
+        chapter,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        activity_path = tmp_path / "activity-challenge"
+        activity_path.mkdir()
+        original_content = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "blockCode",
+                    "attrs": {
+                        "id": "block-imported",
+                        "challengeUuid": "challenge-imported",
+                        "languageId": 71,
+                        "solutionCode": "print('answer')",
+                        "testCases": [
+                            {
+                                "testUuid": "visible-imported",
+                                "label": "Visible",
+                                "expectedStdout": "answer\n",
+                            }
+                        ],
+                        "hiddenTestCases": [
+                            {
+                                "testUuid": "hidden-imported",
+                                "label": "Hidden",
+                                "expectedStdout": "answer\n",
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+
+        with patch(
+            "src.services.courses.transfer.import_service.is_s3_enabled",
+            return_value=False,
+        ):
+            imported_activity = await _import_activity(
+                activity_path=str(activity_path),
+                activity_data={
+                    "name": "Imported challenge",
+                    "activity_type": "TYPE_DYNAMIC",
+                    "activity_sub_type": "SUBTYPE_DYNAMIC_PAGE",
+                    "content": original_content,
+                    "published": False,
+                    "order": 1,
+                },
+                new_course=course,
+                new_chapter=chapter,
+                new_course_path="content/orgs/org_test/courses/course_new",
+                organization=org,
+                db_session=db,
+            )
+        await db.commit()
+
+        attrs = imported_activity.content["content"][0]["attrs"]
+        assert attrs["id"] != "block-imported"
+        assert attrs["challengeUuid"] != "challenge-imported"
+        assert "solutionCode" not in attrs
+        assert "hiddenTestCases" not in attrs
+
+        challenge = (
+            await db.execute(
+                select(CodingChallenge).where(
+                    CodingChallenge.challenge_uuid == attrs["challengeUuid"]
+                )
+            )
+        ).scalars().one()
+        tests = (
+            await db.execute(
+                select(CodingChallengeTest)
+                .where(CodingChallengeTest.challenge_id == challenge.id)
+                .order_by(CodingChallengeTest.order)
+            )
+        ).scalars().all()
+
+        assert challenge.activity_id == imported_activity.id
+        assert challenge.course_id == course.id
+        assert challenge.solution_code == "print('answer')"
+        assert [test.visibility for test in tests] == [
+            CodingChallengeTestVisibility.VISIBLE,
+            CodingChallengeTestVisibility.HIDDEN,
+        ]
+        assert tests[1].expected_stdout == "answer\n"
+
+    @pytest.mark.asyncio
+    async def test_teacher_export_import_round_trip_preserves_private_challenge_data(
+        self,
+        db,
+        org,
+        course,
+        activity,
+        admin_user,
+        tmp_path,
+        monkeypatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        source_content = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "blockCode",
+                    "attrs": {
+                        "id": "block-roundtrip",
+                        "challengeUuid": "challenge-roundtrip",
+                        "languageId": 71,
+                        "solutionCode": "print('private-answer')",
+                        "testCases": [
+                            {
+                                "testUuid": "visible-roundtrip",
+                                "expectedStdout": "public\n",
+                            }
+                        ],
+                        "hiddenTestCases": [
+                            {
+                                "testUuid": "hidden-roundtrip",
+                                "stdin": "private-input",
+                                "expectedStdout": "private-answer\n",
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+        activity.content = await sync_coding_challenges_for_activity(
+            activity, course, source_content, db
+        )
+        db.add(activity)
+        await db.commit()
+
+        course_data, chapters, secrets = await _load_course_export_data(course, db)
+        zip_path = _build_export_zip(
+            [(course.course_uuid, course.name, course_data, chapters, secrets)],
+            org.org_uuid,
+        )
+        extract_dir = tmp_path / "roundtrip"
+        with zipfile.ZipFile(zip_path) as export_zip:
+            activity_entry = next(
+                name
+                for name in export_zip.namelist()
+                if name.endswith("/activity.json")
+            )
+            public_activity_json = export_zip.read(activity_entry).decode("utf-8")
+            private_manifest_json = export_zip.read(
+                f"courses/{course.course_uuid}/coding-challenges.private.json"
+            ).decode("utf-8")
+            assert "private-answer" not in public_activity_json
+            assert "private-input" not in public_activity_json
+            assert "private-answer" in private_manifest_json
+            export_zip.extractall(extract_dir)
+        os.unlink(zip_path)
+
+        imported_course = await _import_single_course(
+            course_path=str(extract_dir / "courses" / course.course_uuid),
+            organization=org,
+            current_user=admin_user,
+            options=ImportOptions(course_uuids=[course.course_uuid]),
+            db_session=db,
+            new_course_uuid="course_roundtrip_imported",
+        )
+        await db.commit()
+
+        imported_challenge = (
+            await db.execute(
+                select(CodingChallenge).where(
+                    CodingChallenge.course_id == imported_course.id
+                )
+            )
+        ).scalars().one()
+        imported_tests = (
+            await db.execute(
+                select(CodingChallengeTest)
+                .where(CodingChallengeTest.challenge_id == imported_challenge.id)
+                .order_by(CodingChallengeTest.order)
+            )
+        ).scalars().all()
+
+        assert imported_challenge.challenge_uuid != "challenge-roundtrip"
+        assert imported_challenge.block_id != "block-roundtrip"
+        assert imported_challenge.solution_code == "print('private-answer')"
+        assert [test.visibility for test in imported_tests] == [
+            CodingChallengeTestVisibility.VISIBLE,
+            CodingChallengeTestVisibility.HIDDEN,
+        ]
+        assert imported_tests[1].stdin == "private-input"
+        assert imported_tests[1].expected_stdout == "private-answer\n"
 
     @pytest.mark.asyncio
     async def test_import_block_renames_files_and_updates_references(

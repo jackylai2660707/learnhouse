@@ -208,14 +208,15 @@ export const OrgMenu = (props: any) => {
                     <TooltipTrigger asChild>
                       <Link
                         href={getUriWithOrg(orgslug, '/self-test')}
-                        className={`p-2 rounded-lg transition-colors ${colors.iconBtn}`}
-                        aria-label="Self-test"
+                        className={`inline-flex items-center gap-1.5 p-2 rounded-lg transition-colors ${colors.iconBtn}`}
+                        aria-label="自我練習"
                       >
                         <ClipboardText size={20} weight="fill" />
+                        <span className="hidden xl:inline text-sm font-semibold">自我練習</span>
                       </Link>
                     </TooltipTrigger>
                     <TooltipContent side="bottom" className="text-xs">
-                      Self-test
+                      自我練習
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
@@ -231,13 +232,13 @@ export const OrgMenu = (props: any) => {
                         <Link
                           href={getUriWithOrg(orgslug, '/boards')}
                           className={`p-2 rounded-lg transition-colors ${colors.iconBtn}`}
-                          aria-label="Boards"
+                          aria-label="討論板"
                         >
                           <ChalkboardSimple size={20} weight="fill" />
                         </Link>
                       </TooltipTrigger>
                       <TooltipContent side="bottom" className="text-xs">
-                        Boards
+                        討論板
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
@@ -412,6 +413,26 @@ export const OrgMenu = (props: any) => {
           <div className='py-4'>
             <MenuLinks orgslug={orgslug} />
           </div>
+          <AuthenticatedClientElement checkMethod="authentication">
+            <div className="grid w-full grid-cols-2 gap-2 px-2">
+              <Link
+                href={getUriWithOrg(orgslug, '/trail')}
+                onClick={() => setIsMenuOpen(false)}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-gray-200 bg-white px-3 text-sm font-bold text-gray-700"
+              >
+                <Signpost size={17} weight="fill" />
+                學習進度
+              </Link>
+              <Link
+                href={getUriWithOrg(orgslug, '/self-test')}
+                onClick={() => setIsMenuOpen(false)}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-gray-950 px-3 text-sm font-bold text-white"
+              >
+                <ClipboardText size={17} weight="fill" />
+                自我練習
+              </Link>
+            </div>
+          </AuthenticatedClientElement>
           <div className="border-t border-gray-200">
             <HeaderProfileBox />
           </div>
@@ -476,7 +497,7 @@ const CopilotMenuButton = ({
             <DropdownMenuTrigger asChild>
               <button
                 className="relative p-2 rounded-lg transition-colors hover:bg-violet-500/10"
-                aria-label="Copilot"
+                aria-label="AI 助手"
               >
                 <ChatCircle size={20} weight="fill" className="text-violet-500" />
                 {/* Active indicator dot */}
@@ -487,7 +508,7 @@ const CopilotMenuButton = ({
             </DropdownMenuTrigger>
           </TooltipTrigger>
           <TooltipContent side="bottom" className="text-xs">
-            Copilot
+            AI 助手
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
@@ -495,7 +516,7 @@ const CopilotMenuButton = ({
       <DropdownMenuContent align="end" className="w-64">
         <DropdownMenuLabel className="flex items-center gap-2">
           <ChatCircle size={16} weight="fill" className="text-violet-500" />
-          <span>Copilot</span>
+          <span>AI 助手</span>
         </DropdownMenuLabel>
         <DropdownMenuSeparator />
 
@@ -509,13 +530,13 @@ const CopilotMenuButton = ({
                   className="flex items-center gap-2 cursor-pointer"
                 >
                   <ChatCircleDots size={14} weight="fill" className="shrink-0 text-neutral-400" />
-                  <span className="truncate text-sm">{s.title || 'Untitled'}</span>
+                  <span className="truncate text-sm">{s.title || '未命名對話'}</span>
                 </DropdownMenuItem>
               ) : (
                 <DropdownMenuItem key={s.aichat_uuid} asChild>
                   <Link href={getUriWithOrg(orgslug, `/copilot?chat=${s.aichat_uuid}`)} className="flex items-center gap-2">
                     <ChatCircleDots size={14} weight="fill" className="shrink-0 text-neutral-400" />
-                    <span className="truncate text-sm">{s.title || 'Untitled'}</span>
+                    <span className="truncate text-sm">{s.title || '未命名對話'}</span>
                   </Link>
                 </DropdownMenuItem>
               )
@@ -524,7 +545,7 @@ const CopilotMenuButton = ({
           </>
         ) : (
           <div className="px-2 py-3 text-center">
-            <p className="text-xs text-neutral-400">No conversations yet</p>
+            <p className="text-xs text-neutral-400">暫時沒有對話</p>
           </div>
         )}
 
@@ -535,13 +556,13 @@ const CopilotMenuButton = ({
             className="flex items-center gap-2 font-medium cursor-pointer"
           >
             <ChatCircle size={14} weight="fill" className="text-violet-500" />
-            <span>{recentSessions.length > 0 ? 'New conversation' : 'Start a conversation'}</span>
+            <span>{recentSessions.length > 0 ? '新增對話' : '開始對話'}</span>
           </DropdownMenuItem>
         ) : (
           <DropdownMenuItem asChild>
             <Link href={getUriWithOrg(orgslug, '/copilot')} className="flex items-center gap-2 font-medium">
               <ChatCircle size={14} weight="fill" className="text-violet-500" />
-              <span>{recentSessions.length > 0 ? 'View all conversations' : 'Start a conversation'}</span>
+              <span>{recentSessions.length > 0 ? '查看全部對話' : '開始對話'}</span>
             </Link>
           </DropdownMenuItem>
         )}
@@ -554,7 +575,7 @@ const CopilotMenuButton = ({
           className="w-full flex items-center justify-between px-2 py-2 rounded-md hover:bg-neutral-50 dark:hover:bg-neutral-800 transition-colors group"
         >
           <span className="text-xs text-neutral-500 group-hover:text-neutral-700 dark:group-hover:text-neutral-300 transition-colors">
-            Open in bubble
+            以浮動視窗開啟
           </span>
           <span
             className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors flex-shrink-0 ${

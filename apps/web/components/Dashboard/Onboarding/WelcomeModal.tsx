@@ -13,6 +13,7 @@ import {
   Files,
   Certificate,
   ChartBar,
+  X,
 } from '@phosphor-icons/react'
 import WelcomeGlobe from './WelcomeGlobe'
 import { useTranslation } from 'react-i18next'
@@ -99,7 +100,7 @@ const FEATURES = [
 ]
 
 export default function WelcomeModal() {
-  const { welcomeSeen, markWelcomeSeen, dismissed } = useOnboarding()
+  const { welcomeSeen, markWelcomeSeen, dismiss, dismissed } = useOnboarding()
   const { t } = useTranslation()
   const [step, setStep] = useState<'welcome' | 'features'>('welcome')
   const [isMobile, setIsMobile] = useState(false)
@@ -135,6 +136,15 @@ export default function WelcomeModal() {
           className="relative w-full max-w-3xl mx-4"
         >
           <div className="bg-white rounded-2xl nice-shadow relative overflow-hidden">
+            <button
+              type="button"
+              onClick={dismiss}
+              aria-label={t('common.close')}
+              title={t('common.close')}
+              className="absolute right-4 top-4 z-20 inline-flex h-9 w-9 items-center justify-center rounded-lg bg-gray-50 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900"
+            >
+              <X size={18} weight="bold" />
+            </button>
             {/* Top content */}
             <AnimatePresence mode="wait">
               {!showFeatures ? (

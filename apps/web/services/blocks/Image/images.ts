@@ -76,7 +76,9 @@ export async function generateAIImageBlock(
       ? data.detail
       : Array.isArray(data?.detail)
         ? data.detail.map((e: any) => e.msg).join(', ')
-        : 'Image generation failed'
+        : typeof data?.detail?.message === 'string'
+          ? data.detail.message
+          : 'AI 生圖暫時不可用，請稍後重試或手動上傳圖片。'
     throw new Error(errorMessage)
   }
 

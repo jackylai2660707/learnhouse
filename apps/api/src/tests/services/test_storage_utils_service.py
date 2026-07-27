@@ -442,13 +442,16 @@ class TestUploadAndDeleteHelpers:
 
         s3_client = Mock()
         paginator = Mock()
-        paginator.paginate.return_value = [
-            {
-                "Contents": [
-                    {"Key": f"{s3_dir}/nested.txt"},
-                    {"Key": f"{s3_dir}/more.txt"},
-                ]
-            }
+        paginator.paginate.side_effect = [
+            [
+                {
+                    "Contents": [
+                        {"Key": f"{s3_dir}/nested.txt"},
+                        {"Key": f"{s3_dir}/more.txt"},
+                    ]
+                }
+            ],
+            [{"Contents": []}],
         ]
         s3_client.get_paginator.return_value = paginator
 
@@ -661,10 +664,36 @@ class TestUploadAndDeleteHelpers:
             "get_content_delivery_type",
             return_value="filesystem",
         ), patch("shutil.rmtree", side_effect=OSError("permission denied")):
-            # Should not raise even though rmtree fails
+            # Cleanup failure must remain visible to the durable-job sweeper.
             result = storage_utils.delete_storage_directory(str(local_dir))
 
-        assert result is True
+        assert result is False
+
+    def test_delete_storage_directory_rejects_partial_s3_delete_and_access_denied(self):
+        s3_client = Mock()
+        paginator = Mock()
+        paginator.paginate.return_value = [
+            {"Contents": [{"Key": "content/_internal/pdf-builds/x/source.pdf"}]}
+        ]
+        s3_client.get_paginator.return_value = paginator
+        s3_client.delete_objects.return_value = {
+            "Errors": [{"Key": "content/_internal/pdf-builds/x/source.pdf", "Code": "AccessDenied"}]
+        }
+
+        with patch.object(storage_utils, "get_content_delivery_type", return_value="s3api"), patch.object(
+            storage_utils, "get_storage_client", return_value=s3_client
+        ), patch.object(storage_utils, "get_s3_bucket_name", return_value="bucket"):
+            assert storage_utils.delete_storage_directory(
+                "content/_internal/pdf-builds/x"
+            ) is False
+
+        s3_client.get_paginator.side_effect = _client_error("AccessDenied", "list_objects_v2")
+        with patch.object(storage_utils, "get_content_delivery_type", return_value="s3api"), patch.object(
+            storage_utils, "get_storage_client", return_value=s3_client
+        ), patch.object(storage_utils, "get_s3_bucket_name", return_value="bucket"):
+            assert storage_utils.delete_storage_directory(
+                "content/_internal/pdf-builds/x"
+            ) is False
 
     def test_delete_storage_file_swallows_os_remove_exception(self, tmp_path):
         """Cover lines 424-425: except Exception: pass when os.remove raises."""

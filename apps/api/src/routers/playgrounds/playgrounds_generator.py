@@ -54,6 +54,8 @@ async def get_org_ai_model(org_id: int, db_session: AsyncSession) -> str:
 
 
 async def _get_course_context(
+    request: Request,
+    current_user: PublicUser | AnonymousUser | APITokenUser,
     course_uuid: Optional[str],
     org_id: int,
     db_session: AsyncSession,
@@ -70,16 +72,35 @@ async def _get_course_context(
         return None, None
 
     try:
+        from src.services.ai.rag.access_scope import resolve_rag_retrieval_scope
         from src.services.ai.rag.query_service import query_course_rag
+
+        scope = await resolve_rag_retrieval_scope(
+            request,
+            current_user,
+            org_id,
+            db_session,
+            requested_course=course,
+        )
         rag_result = await query_course_rag(
             question=prompt,
             org_id=org_id,
             db_session=db_session,
             course_id=course.id,
+            authorized_course_ids=scope.course_ids,
+            authorized_activity_ids=scope.activity_ids,
         )
         return rag_result.get("context") or None, course.id
-    except Exception as e:
-        logging.warning("Failed to fetch RAG context for playground: %s", e)
+    except HTTPException:
+        # Course context is optional for playground generation, but access is
+        # not: continue without context rather than exposing a private/draft
+        # course or consuming rows outside the server-authorized scope.
+        return None, course.id
+    except Exception as exc:
+        logging.warning(
+            "Failed to fetch RAG context for playground (error_code=%s)",
+            type(exc).__name__,
+        )
         return None, course.id
 
 
@@ -134,6 +155,8 @@ async def start_playground_session(
 
     # Fetch RAG context if course linked
     course_context, _ = await _get_course_context(
+        request,
+        current_user,
         session_request.context.course_uuid,
         org.id,
         db_session,
@@ -229,6 +252,8 @@ async def iterate_playground_session(
 
     # Fetch RAG context if course linked
     course_context, _ = await _get_course_context(
+        request,
+        current_user,
         session.context.course_uuid,
         org.id,
         db_session,

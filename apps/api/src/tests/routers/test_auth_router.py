@@ -50,7 +50,7 @@ async def client(app):
 
 
 @pytest.fixture
-def auth_user(db):
+async def auth_user(db):
     user = User(
         id=11,
         username="authuser",
@@ -64,8 +64,8 @@ def auth_user(db):
         update_date=str(datetime.now()),
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
+    await db.commit()
+    await db.refresh(user)
     return user
 
 
@@ -279,7 +279,7 @@ class TestAuthRouter:
             response = await client.get("/api/v1/auth/refresh")
         assert response.status_code == 401
 
-    async def test_login_success(self, client, auth_user):
+    async def test_login_success(self, client, auth_user, db):
         with patch(
             "src.routers.auth.check_login_rate_limit",
             return_value=(True, None),
@@ -290,10 +290,16 @@ class TestAuthRouter:
             "src.routers.auth.authenticate_user",
             new_callable=AsyncMock,
             return_value=auth_user,
-        ), patch("src.routers.auth.reset_failed_attempts"), patch(
+        ), patch(
+            "src.routers.auth.reset_failed_attempts",
+            new_callable=AsyncMock,
+        ) as reset_failed_attempts_mock, patch(
             "src.routers.auth.get_client_ip",
             return_value="127.0.0.1",
-        ), patch("src.routers.auth.update_login_info"), patch(
+        ), patch(
+            "src.routers.auth.update_login_info",
+            new_callable=AsyncMock,
+        ) as update_login_info_mock, patch(
             "src.routers.auth.create_access_token",
             return_value="access-token",
         ), patch(
@@ -313,6 +319,12 @@ class TestAuthRouter:
 
         assert response.status_code == 200
         assert response.json()["user"]["email"] == auth_user.email
+        reset_failed_attempts_mock.assert_awaited_once_with(auth_user, db)
+        update_login_info_mock.assert_awaited_once_with(
+            auth_user,
+            "127.0.0.1",
+            db,
+        )
 
     async def test_login_invalid_credentials_and_email_not_verified(self, client, auth_user):
         with patch(
@@ -327,6 +339,7 @@ class TestAuthRouter:
             return_value=False,
         ), patch(
             "src.routers.auth.record_failed_login",
+            new_callable=AsyncMock,
             return_value=(False, 0),
         ):
             response = await client.post(
@@ -406,6 +419,7 @@ class TestAuthRouter:
             return_value=False,
         ), patch(
             "src.routers.auth.record_failed_login",
+            new_callable=AsyncMock,
             return_value=(True, 120),
         ):
             response = await client.post(

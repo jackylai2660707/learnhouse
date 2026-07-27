@@ -538,6 +538,7 @@ function ActivityIndicators(props: Props) {
                       >
                         <Link
                           prefetch={false}
+                          aria-label={activity.name || t('activities.unnamed_activity', { defaultValue: '未命名活動' })}
                           href={
                             getUriWithOrg(orgslug, '') +
                             `/course/${courseid}/activity/${activity.activity_uuid.replace(

@@ -257,7 +257,7 @@ class TestCommunitiesRouter:
         )
         db.add(community)
         db.add(orphan_community)
-        db.commit()
+        await db.commit()
 
         with patch("src.routers.communities.communities.check_resource_access", new_callable=AsyncMock), patch(
             "src.routers.communities.communities.upload_community_thumbnail",

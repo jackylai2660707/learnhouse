@@ -23,7 +23,7 @@
     "japanese": "Japanese",
     "portuguese": "Portuguese",
     "russian": "Russian",
-    "chinese": "Chinese (Simplified)",
+    "chinese": "Chinese (Traditional)",
     "hindi": "Hindi",
     "korean": "Korean",
     "italian": "Italian",
@@ -42,6 +42,16 @@
     "all_assignments": "All Assignments",
     "recent": "Recent",
     "expand": "Expand",
+    "dashboard_sidebar_navigation": "Dashboard sidebar navigation",
+    "learnhouse_logo": "LearnHouse logo",
+    "collapse_sidebar": "Collapse sidebar",
+    "expand_sidebar": "Expand sidebar",
+    "open_courses_menu": "Open courses menu",
+    "open_assignments_menu": "Open assignments menu",
+    "open_users_menu": "Open users menu",
+    "open_organization_menu": "Open organization menu",
+    "open_language_menu": "Open language menu",
+    "open_help_menu": "Open help menu",
     "help": "Help",
     "help_menu": {
       "documentation": "Documentation",
@@ -198,6 +208,8 @@
     "creating": "Creating...",
     "view_details": "View Details",
     "optional": "optional",
+    "other": "Other",
+    "disabled": "Disabled",
     "close": "Close",
     "add": "Add",
     "for": "for",
@@ -1227,10 +1239,31 @@
     "powered_by": "Powered by LearnHouse"
   },
   "assignments": {
+    "save_task_answer": "Save this answer",
+    "saving_task_answer": "Saving...",
+    "save_task_answer_note": "This only saves this question. Submit the whole assignment after all questions are done.",
+    "save_quiz_select_option_first": "Choose an answer before saving this question.",
+    "save_form_fill_blank_first": "Fill in every blank before saving this question.",
+    "save_short_answer_first": "Enter an answer before saving this question.",
+    "save_number_answer_first": "Enter an answer before saving this question.",
+    "task_answer_saved_not_submitted": "This answer is saved. When every question is done, remember to submit for grading.",
     "submit_assignment": "Submit Assignment",
-    "submit_assignment_confirm": "Are you sure you want to submit your assignment for grading? Once submitted, you will not be able to make any changes.",
+    "submit_assignment_confirm": "Submit this assignment for grading? If you get something wrong, you can try again, edit your answers, and resubmit.",
+    "submit_assignment_answer_reminder": "Before submitting, make sure every question has an answer and you have clicked Save this answer. The system will auto-grade simple questions.",
+    "score_policy_highest_student_note": "Mistakes are okay: if you try again, the system keeps your best score.",
+    "score_policy_latest_student_note": "Mistakes are okay: if you try again, the system keeps your best score.",
     "submit_assignment_title": "Submit your assignment for grading",
     "submit_for_grading": "Submit for grading",
+    "complete_all_tasks_before_submit": "Complete and save every question first",
+    "complete_all_tasks_before_submit_toast": "Complete and save every question first. Still missing: {{tasks}}",
+    "complete_all_tasks_before_submit_generic": "Complete and save every question before submitting for grading.",
+    "task_name_separator": ", ",
+    "incomplete_tasks_short": "Still missing",
+    "more_tasks_suffix": "and {{count}} more",
+    "loading_tasks": "Loading questions",
+    "loading_answers": "Loading answers",
+    "tasks_load_failed": "Questions failed to load",
+    "teacher_preparing_tasks": "The teacher is preparing questions",
     "grading_in_progress": "Grading in progress",
     "graded": "Graded",
     "task_breakdown": "Task breakdown",
@@ -1241,6 +1274,24 @@
     "assignment_submitted_success": "Assignment submitted for grading",
     "failed_submit_assignment": "Failed to submit assignment for grading",
     "assignment_description": "Assignment Description",
+    "student_flow_title": "Submit for grading when you finish",
+    "student_flow_description": "Save each answer first. When every question is done, use Submit for grading in the assignment toolbar. Multiple choice, fill-in-the-blank, and short Q&A are auto-graded; if you get something wrong, you can try again.",
+    "student_flow_step_save": "1. Save answers",
+    "student_flow_step_submit": "2. Submit",
+    "student_flow_step_retry": "3. Retry mistakes",
+    "student_progress_title": "Answer progress",
+    "student_progress_completed": "Completed",
+    "student_progress_ready": "All questions are saved. You can submit for grading.",
+    "student_progress_submit_next": "Next: use Submit for grading in the assignment toolbar so the system can count your score.",
+    "student_progress_go_submit": "Go to submit button",
+    "student_progress_next": "Next question: {{task}}",
+    "student_progress_jump_next": "Jump to next question",
+    "submitted_waiting_title": "Assignment submitted, grading in progress",
+    "submitted_late_waiting_title": "Late submission received, grading in progress",
+    "submitted_waiting_autograde_description": "The system has received your answers and is preparing the result. After grading, you will see your score and the questions to practice; you can use Try again to edit and resubmit.",
+    "submitted_waiting_review_description": "Your teacher has received this assignment. After grading, you will see your score and feedback; you can use Try again to edit and resubmit.",
+    "best_score_retained": "Best score kept: {{grade}}/{{max}}. It will update after you resubmit.",
+    "result_best_score_retained": "Best score kept: {{grade}}/{{max}}, from attempt {{attempt}}.",
     "task": "Task",
     "hint": "Hint",
     "reference_document": "Reference Document",
@@ -1254,12 +1305,23 @@
     "attempt_count_bounded": "Attempt {{current}} of {{max}}",
     "retry_assignment": "Try again",
     "retry_assignment_title": "Try this assignment again?",
-    "retry_assignment_confirm": "Your current submission and answers will be reset so you can start over. Your previous grade will be replaced once you resubmit.",
+    "retry_assignment_confirm": "Your saved answers will stay in place so you can edit them and resubmit. Your best score will be kept.",
     "retry_assignment_remaining": "You have {{remaining}} attempt{{plural}} left after this one.",
     "retry_assignment_last": "This is your last attempt — make it count.",
-    "retry_assignment_success": "Your work has been reset — give it another shot.",
-    "retry_assignment_failed": "Couldn't reset your submission. Please try again.",
+    "retry_assignment_success": "You can now edit your saved answers and resubmit.",
+    "retry_assignment_failed": "Couldn't reopen this attempt. Please try again.",
     "retry_no_attempts_left": "No retries left",
+    "result_passed_title": "Completed. Review your result",
+    "result_passed_description": "Check each question result and any teacher or system feedback.",
+    "result_retry_title": "Mistakes are practice",
+    "result_retry_description": "Review the questions that were not correct, then use Try again to edit your answers and resubmit.",
+    "result_review_title": "Review what needs practice",
+    "result_review_description": "Check each question result and feedback, then follow your teacher's next practice plan.",
+    "result_answer_review_hint": "Reference answers are shown beside the questions. Review what went wrong, then use Try again to practice.",
+    "result_total_tasks": "Graded",
+    "result_correct_tasks": "Correct",
+    "result_practice_tasks": "Practice",
+    "jump_to_first_practice_task": "Review first practice question",
     "quiz": {
       "correct_answer": "Correct",
       "incorrect_answer": "Wrong"
@@ -3484,8 +3546,13 @@
     },
     "self_tests": {
       "title": "Self-tests",
-      "subtitle": "Student practice attempts drawn from the shared question bank.",
-      "keywords": "self-test practice quiz attempts grading records"
+      "subtitle": "Student practice using simple quiz, fill-blank, and short-answer questions from the shared question bank.",
+      "keywords": "self-test practice quiz fill blanks short answer attempts grading records"
+    },
+    "gradebook": {
+      "title": "Gradebook",
+      "subtitle": "View submission rate, scores, missing students, self-test records, and principal summaries.",
+      "keywords": "gradebook scores submissions missing students grading review principal summary self-tests"
     },
     "assignments": {
       "home": {
@@ -3555,6 +3622,8 @@
       "editor": {
         "tasks_title": "Tasks",
         "add_task": "Add Task",
+        "default_task_title": "Untitled question",
+        "auth_loading": "Your sign-in state is still loading. Please try again in a moment.",
         "add_task_modal": {
           "title": "Add an Assignment Task",
           "description": "Create a new task for this assignment"
@@ -3577,8 +3646,8 @@
             "description": "Code challenge with automated test case grading"
           },
           "short_answer": {
-            "title": "Short answer",
-            "description": "Students type a text answer graded against your accepted answers"
+            "title": "Short Q&A",
+            "description": "Students type a keyword or short factual answer"
           },
           "number_answer": {
             "title": "Number answer",
@@ -3586,10 +3655,13 @@
           }
         },
         "ai_generator": {
-          "title": "AI question generator",
-          "subtitle": "Create auto-gradable homework tasks from a teacher brief.",
-          "prompt_placeholder": "Example: Generate Python loop practice for beginners. Include multiple choice, numeric answers, and one coding challenge with test cases.",
+          "title": "AI simple question generator",
+          "subtitle": "Enter a topic and AI creates multiple choice, fill-in-the-blank, and short Q&A with saved answers for auto-grading.",
+          "prompt_placeholder": "Leave blank to generate directly, or write: Generate 3 beginner practice questions for this lesson with clear answers.",
           "prompt_required": "Describe what the homework should cover.",
+          "simple_note": "The system only uses these three simple task types. It does not generate images, essays, file uploads, code, or complex rubric questions. Short numeric answers for math or science can still be auto-graded through fill-in-the-blank or short Q&A.",
+          "one_click_note_title": "Teachers only enter a topic; AI creates simple homework.",
+          "one_click_note_body": "The system creates beginner multiple choice, fill-in-the-blank, and short Q&A tasks with saved answers. Teachers do not need to write AI prompts or enter every answer manually, and students get a score after submitting.",
           "count": "Count",
           "difficulty": "Difficulty",
           "difficulties": {
@@ -3597,21 +3669,43 @@
             "intermediate": "Intermediate",
             "advanced": "Advanced"
           },
+          "presets": {
+            "basic_practice": "Basic practice",
+            "review": "Lesson review",
+            "mini_quiz": "Mini quiz"
+          },
           "types": {
             "quiz": "Quiz",
-            "short_answer": "Short answer",
-            "number_answer": "Number answer",
-            "code": "Code",
+            "short_answer": "Short Q&A",
             "form": "Fill blanks"
           },
           "include_images": "Attach AI-generated reference images when useful",
           "save_to_bank": "Save generated questions to the question bank",
           "tags_placeholder": "Tags, comma separated",
-          "generate": "Generate tasks",
+          "generate": "Generate simple questions",
+          "generate_with_count": "Generate {{count}} questions and save answers",
           "generating": "Generating",
-          "success": "AI questions generated.",
+          "auth_loading_short": "Signing in",
+          "published_locked_button": "Published: cannot add",
+          "limit_reached_button": "Question limit reached",
+          "context_required_button": "Enter a topic first",
+          "status_loading": "Checking AI question generation status, please wait.",
+          "status_loading_short": "Checking AI",
+          "status_error": "Failed to check AI question generation status.",
+          "status_detail_prefix": "Status",
+          "ready": "AI generation is ready for simple auto-graded questions.",
+          "not_ready_title": "AI generation is not ready",
+          "not_ready_body": "AI question generation is not fully configured. Use the question bank or create multiple choice, fill-in-the-blank, and short Q&A manually first; configure AI later.",
+          "not_ready_button": "AI not ready",
+          "use_manual_or_bank": "Use bank or manual questions",
+          "success": "AI questions generated. Next, click \"Publish to students\" in the top right.",
           "error": "AI question generation failed.",
-          "manual_title": "Create manually"
+          "failed_title": "AI could not generate questions this time",
+          "failed_fallback": "You do not need to wait for AI. Use the question bank or manually create multiple choice, fill-in-the-blank, and short Q&A so students can still be auto-graded.",
+          "failed_fallback_cta": "Use bank or manual questions now",
+          "manual_title": "Common types",
+          "show_advanced": "Show advanced types",
+          "hide_advanced": "Hide advanced types"
         },
         "question_bank": {
           "title": "Question bank",
@@ -3702,12 +3796,61 @@
             "must_pass_hint": "All visible tests must pass before you can save.",
             "show_solution_label": "Reveal solution after submit",
             "show_solution_description": "Once the student has saved their work, show the teacher's reference solution as a collapsible panel.",
-            "reference_solution_label": "Reference solution"
+            "reference_solution_label": "Reference solution",
+            "language_label": "Language",
+            "grading_mode_label": "Grading mode",
+            "grading_modes": {
+              "equal_weight": "Equal weight",
+              "binary": "Binary (all or nothing)",
+              "custom_weights": "Custom weights"
+            },
+            "starter_code_label": "Starter code",
+            "solution_code_label": "Solution code (optional teacher reference)",
+            "test_cases_label": "Test cases",
+            "add_test_case": "Add test case",
+            "test_default_label": "Test {{count}}",
+            "test_label_placeholder": "Test label",
+            "hidden_label": "Hidden",
+            "visible_label": "Visible",
+            "hidden_test_title": "Hidden from students",
+            "visible_test_title": "Visible to students",
+            "weight_label": "Weight",
+            "stdin_label": "Input (stdin)",
+            "input_placeholder": "Enter test input",
+            "expected_stdout_label": "Expected output",
+            "expected_output_placeholder": "Enter the expected output",
+            "run_tests": "Run tests",
+            "running_tests": "Running tests…",
+            "checking": "Checking…",
+            "check_task": "Check task",
+            "web_preview_badge": "HTML / CSS live preview",
+            "hidden_test_count_one": "{{count}} hidden test",
+            "hidden_test_count_other": "{{count}} hidden tests",
+            "unknown_language": "Unknown language (ID {{id}})",
+            "student_code_label": "Student's code",
+            "live_preview_label": "Live preview",
+            "live_preview_help": "Updates as you edit",
+            "live_preview_title": "HTML, CSS and JavaScript live preview",
+            "results_summary": "Results: {{passed}}/{{total}} passed",
+            "all_passed": "All passed",
+            "some_failed": "Some tests did not pass",
+            "expected_result_label": "Expected:",
+            "actual_result_label": "Received:",
+            "error_result_label": "Error:",
+            "compile_result_label": "Compiler output:",
+            "hidden_details": "Details are hidden for this test.",
+            "no_tests_error": "Add at least one test case before running the code.",
+            "execution_error": "Code execution is temporarily unavailable. Please retry.",
+            "unsupported_runtime": "This saved language is not supported by the school code runner.",
+            "unsupported_runtime_teacher": "{{language}} is not supported by the school code runner. Choose Python, JavaScript, TypeScript, C, C++ or Java before saving.",
+            "unsupported_runtime_student": "This task uses {{language}}, which the school code runner cannot run yet. Ask your teacher to choose a supported language."
           }
         }
       },
       "submissions": {
         "status": {
+          "not_submitted": "Not submitted",
+          "in_progress": "Redoing",
           "late": "Late",
           "submitted": "Submitted",
           "graded": "Graded"
@@ -3746,6 +3889,13 @@
         "grade_label": "Grade:",
         "submission_label": "Submission",
         "evaluate": "Evaluate",
+        "waiting_for_submission": "Waiting",
+        "waiting_for_resubmission": "Waiting for resubmission",
+        "not_submitted_date": "Not submitted",
+        "copy_missing": "Copy missing list",
+        "copy_missing_empty": "There are no missing students right now.",
+        "copy_missing_success": "Missing student list copied",
+        "copy_missing_error": "Copy failed. Please select the list manually.",
         "evaluate_modal": {
           "title": "Evaluate @{{username}}",
           "description": "Evaluate the submission"
@@ -3763,7 +3913,7 @@
           "finalize_description": "Sets the final grade and marks the activity as done for the student"
         },
         "toasts": {
-          "reject_success": "Assignment rejected successfully",
+          "reject_success": "Assignment returned for resubmission",
           "finalize_success": "Assignment graded and activity marked as complete"
         }
       },
@@ -3826,8 +3976,9 @@
           "form": {
             "title_label": "Assignment Title",
             "title_required": "Please provide a name for your assignment",
-            "description_label": "Assignment Description",
+            "description_label": "Assignment Description (optional)",
             "description_required": "Please provide a description for your assignment",
+            "description_placeholder": "Optional, for example: Basic practice for this lesson.",
             "due_date_label": "Due Date",
             "due_date_required": "Please provide a due date for your assignment",
             "grading_type_label": "Grading Type",
@@ -3857,7 +4008,7 @@
             "show_correct_answers_label": "Reveal correct answers after grading",
             "show_correct_answers_description": "Once the submission is graded, show students the right answers alongside their own — which quiz options were correct, the expected short or number answer, and the correct form blanks.",
             "allow_retries_label": "Allow retries",
-            "allow_retries_description": "Let students reset and re-attempt the assignment after it's graded. Each retry wipes their previous answers and counts as a new attempt.",
+            "allow_retries_description": "Let students correct and resubmit after grading. Their saved answers stay in place, while scores are recalculated for the new attempt.",
             "max_retries_label": "Maximum attempts",
             "max_retries_unlimited": "0 means unlimited attempts",
             "max_retries_bounded": "Total graded attempts (initial submission + retries)",
@@ -4966,6 +5117,112 @@
     "backToCourses": "Back to Courses",
     "loadError": "This course could not be found or there was an error loading it.",
     "noPermission": "You do not have permission to view this course."
+  },
+  "code_playground": {
+    "tabs": {
+      "description": "Description",
+      "preview": "Preview",
+      "tests": "Test Cases",
+      "output": "Output",
+      "history": "History"
+    },
+    "preview": {
+      "frame_title": "Live preview of your HTML, CSS and JavaScript",
+      "refresh": "Refresh Preview",
+      "help": "This exercise renders in your browser. Nothing is sent to the code server.",
+      "updating": "updating…",
+      "label": "preview",
+      "reload": "Reload preview",
+      "console": "Console",
+      "error_count_one": "{{count}} error",
+      "error_count_other": "{{count}} errors",
+      "clear_console": "Clear console",
+      "console_empty": "console.log() output and JavaScript errors appear here.",
+      "line": "line {{line}}"
+    },
+    "mobile": {
+      "code": "Code",
+      "details": "Details & Results"
+    },
+    "actions": {
+      "run": "Run",
+      "test_run": "Test Run",
+      "submit": "Submit",
+      "retry": "Retry",
+      "previous": "Previous",
+      "next": "Next"
+    },
+    "status": {
+      "all_passed": "All passed",
+      "all_tests_passed": "All test cases passed",
+      "passed_count": "{{passed}} of {{total}} passed",
+      "accepted": "Accepted",
+      "failed": "Failed"
+    },
+    "solution": {
+      "title": "Solution",
+      "view": "View Solution",
+      "hide": "Hide Solution",
+      "hidden": "Solution is hidden for this challenge",
+      "unlock_after_pass": "Solution unlocks after your formal submission passes",
+      "diff": "Diff"
+    },
+    "output": {
+      "empty": "Run your code to see output.",
+      "score": "Score",
+      "expected": "Expected"
+    },
+    "editor": {
+      "description": "Challenge Description",
+      "difficulty": "Difficulty",
+      "required": "Required Challenge",
+      "hints": "Hints",
+      "advanced": "Advanced Settings",
+      "solution_code": "Solution Code"
+    },
+    "tests": {
+      "yours": "Your Test Cases",
+      "empty_custom": "Add your own tests to check edge cases.",
+      "add": "Add Test",
+      "editor_empty": "Add tests to validate student solutions.",
+      "student_empty": "No tests are available for this challenge.",
+      "input": "Input",
+      "expected": "Expected Output",
+      "your_output": "Your Output",
+      "hidden": "Hidden Tests",
+      "hidden_help": "Hidden tests run only on formal submission and remain stored on the server.",
+      "hidden_empty": "No hidden tests configured.",
+      "custom_label": "My test {{count}}",
+      "custom_input": "Input (stdin)",
+      "custom_input_placeholder": "Enter test input...",
+      "expected_placeholder": "Enter the expected output..."
+    },
+    "errors": {
+      "execution": "Code execution is temporarily unavailable. Please retry.",
+      "submit": "Your answer could not be submitted. Please retry.",
+      "state": "Your previous challenge progress could not be loaded. You can still edit your code and retry.",
+      "solution": "The reference solution could not be loaded. Please retry.",
+      "sqlite_upload": "The SQLite file could not be uploaded. Check the course context and retry.",
+      "sqlite_required": "Upload an SQLite database file before running or submitting SQL.",
+      "authentication_required": "Sign in, or wait for sign-in to finish, before running or submitting code.",
+      "challenge_required": "This coding challenge is not ready yet. Please retry shortly or ask your teacher.",
+      "unsupported_runtime": "This saved language is not supported by the school code runner.",
+      "unsupported_runtime_editor": "{{language}} is not supported by the school code runner. Choose Python, JavaScript, TypeScript, C, C++ or Java before publishing.",
+      "unsupported_runtime_student": "This exercise uses {{language}}, which the school code runner cannot run yet. Ask your teacher to choose a supported language."
+    },
+    "history": {
+      "load_error": "Failed to load submission history",
+      "unavailable": "Submission history is unavailable for this activity.",
+      "empty": "No formal submissions yet. Select Submit to create one.",
+      "passed_count": "{{passed}} of {{total}} tests passed",
+      "restore": "Restore this code",
+      "page": "Page {{page}} of {{total}}"
+    },
+    "timed": {
+      "title": "Timed Challenge",
+      "minutes": "You have {{count}} minutes to complete this challenge.",
+      "start": "Start Challenge"
+    }
   },
   "pagination": {
     "next": "Next",

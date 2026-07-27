@@ -390,17 +390,20 @@ const UserProfileBuilder = () => {
                         draggableId={section.id}
                         index={index}
                       >
-                        {(provided, snapshot) => (
-                          <div
-                            ref={provided.innerRef}
-                            {...provided.draggableProps}
-                            onClick={() => setSelectedSection(index)}
-                            className={`p-4 bg-white/80 backdrop-blur-xs rounded-lg cursor-pointer border ${
-                              selectedSection === index 
-                                ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-500/20 shadow-xs' 
-                                : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50/50 hover:shadow-xs'
-                            } ${snapshot.isDragging ? 'shadow-lg ring-2 ring-blue-500/20 rotate-2' : ''}`}
-                          >
+                        {(provided, snapshot) => {
+                          const { style, ...draggableProps } = provided.draggableProps
+                          return (
+                            <div
+                              ref={provided.innerRef}
+                              {...draggableProps}
+                              style={style as React.CSSProperties}
+                              onClick={() => setSelectedSection(index)}
+                              className={`p-4 bg-white/80 backdrop-blur-xs rounded-lg cursor-pointer border ${
+                                selectedSection === index
+                                  ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-500/20 shadow-xs'
+                                  : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50/50 hover:shadow-xs'
+                              } ${snapshot.isDragging ? 'shadow-lg ring-2 ring-blue-500/20 rotate-2' : ''}`}
+                            >
                             <div className="flex items-center justify-between group">
                               <div className="flex items-center space-x-3">
                                 <div {...provided.dragHandleProps} 
@@ -453,8 +456,9 @@ const UserProfileBuilder = () => {
                                 </button>
                               </div>
                             </div>
-                          </div>
-                        )}
+                            </div>
+                          )
+                        }}
                       </Draggable>
                     ))}
                     {provided.placeholder}
@@ -1359,4 +1363,4 @@ const CoursesEditor: React.FC<{
   )
 }
 
-export default UserProfileBuilder 
+export default UserProfileBuilder

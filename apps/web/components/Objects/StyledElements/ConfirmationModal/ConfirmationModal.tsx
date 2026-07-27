@@ -1,10 +1,10 @@
 'use client'
 import React from 'react'
 import Modal from '@components/Objects/StyledElements/Modal/Modal'
-import { AlertTriangle, Info } from 'lucide-react'
+import { AlertTriangle, Info, Loader2 } from 'lucide-react'
 
 type ModalParams = {
-  confirmationMessage: string
+  confirmationMessage: React.ReactNode
   confirmationButtonText: string
   dialogTitle: string
   functionToExecute: any
@@ -15,16 +15,25 @@ type ModalParams = {
 
 const ConfirmationModal = (params: ModalParams) => {
   const [isDialogOpen, setIsDialogOpen] = React.useState(false)
+  const [isExecuting, setIsExecuting] = React.useState(false)
   const isWarning = params.status === 'warning'
   const iconColors = isWarning ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'
   const buttonColors = isWarning
     ? 'text-white bg-red-500 hover:bg-red-600'
     : 'text-white bg-blue-500 hover:bg-blue-600'
 
-  const handleConfirm = React.useCallback(() => {
-    params.functionToExecute()
-    setIsDialogOpen(false)
-  }, [params])
+  const handleConfirm = React.useCallback(async () => {
+    if (isExecuting) return
+    setIsExecuting(true)
+    try {
+      const result = await params.functionToExecute()
+      if (result !== false) {
+        setIsDialogOpen(false)
+      }
+    } finally {
+      setIsExecuting(false)
+    }
+  }, [params, isExecuting])
 
   return (
     <Modal
@@ -48,8 +57,10 @@ const ConfirmationModal = (params: ModalParams) => {
                 type="button"
                 id={params.buttonid}
                 onClick={handleConfirm}
-                className={`rounded-md text-sm px-3 py-2 font-bold flex justify-center items-center cursor-pointer ${buttonColors} hover:shadow-lg transition duration-300 ease-in-out`}
+                disabled={isExecuting}
+                className={`rounded-md text-sm px-3 py-2 font-bold flex justify-center items-center gap-2 cursor-pointer ${buttonColors} hover:shadow-lg transition duration-300 ease-in-out disabled:cursor-not-allowed disabled:opacity-60`}
               >
+                {isExecuting && <Loader2 size={14} className="animate-spin" />}
                 {params.confirmationButtonText}
               </button>
             </div>

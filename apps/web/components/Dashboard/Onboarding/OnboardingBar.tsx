@@ -344,6 +344,8 @@ export default function OnboardingBar() {
                     )}
                     <button
                       onClick={toggleExpanded}
+                      aria-label={expanded ? t('onboarding.show_less') : t('common.expand')}
+                      title={expanded ? t('onboarding.show_less') : t('common.expand')}
                       className="p-1 text-gray-400 hover:text-gray-600 rounded-lg transition-colors"
                     >
                       {expanded ? (
@@ -354,6 +356,8 @@ export default function OnboardingBar() {
                     </button>
                     <button
                       onClick={toggleMinimized}
+                      aria-label={t('onboarding.show_less')}
+                      title={t('onboarding.show_less')}
                       className="p-1 text-gray-400 hover:text-gray-600 rounded-lg transition-colors"
                     >
                       <CaretDown size={16} weight="bold" />
